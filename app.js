@@ -11,7 +11,7 @@ const port = 3000;
  * @param {string} pretendDomainSource The source domain the headers should pretend by.
  * @returns {Object.<string, string>} The transferred headers.
  */
-function transferHeaders(source, pretendDomainSource) {
+function transferHeaders(source, _pretendDomainSource) {
   let s = {};
   if (source instanceof Headers) {
     source.forEach((value, key) => (s[key] = value));
