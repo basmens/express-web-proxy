@@ -1,7 +1,27 @@
 const express = require('express');
 const app = express();
 const port = 3000;
-const proxyTarget = "https://www.nytimes.com";
+const defaultBrowser = 'https://www.startpage.com/';
+
+/**
+ * Extracts the proxy target from the first part of the url. The proxy target will be returned raw,
+ * but also if the first part starts with 'http.' or 'https.', then the dot will be replaced with '://'.
+ * This processed proxy with then be returned as well. Finally, the rest of the url will be returned.
+ * For example: '/https.example.com/some/url' => ['https.example.com', 'https://example.com', '/some/url'].
+ * @param {string} url The url to split up.
+ * @return {[string, string, string]} The raw proxy target, processed proxy target and remaining url in that order.
+ */
+function extractProxyTarget(url) {
+  if (url == '/') return [defaultBrowser.replace('://', '.'), defaultBrowser, '/'];
+
+  const parts = url.substring(1).split('/');
+  const rawProxyTarget = parts.shift();
+  let processedProxyTarget = rawProxyTarget;
+  if (processedProxyTarget.startsWith('http.') || processedProxyTarget.startsWith('https.'))
+    processedProxyTarget = processedProxyTarget.replace('.', '://');
+
+  return [rawProxyTarget, processedProxyTarget, '/' + parts.join('/')];
+}
 
 /**
  * Transfers http headers from a list and extracts the relevant ones,
@@ -46,45 +66,85 @@ function transferHeaders(source, pretendDomainSource) {
   return result;
 }
 
+// function replaceDomain(source, value) {
+//   const val = 'http://' + value + ':' + port;
+//   let result = source.replaceAll(proxyTarget, val);
+//   result = result.replaceAll(proxyTarget.replaceAll('/', '\\u002F'), val.replaceAll('/', '\\u002F'));
+//   result = result.replaceAll("https://csp.nytimes.com", val);
+//   return result;
+// }
+
 /**
- * Replaces all instances of proxy target in the given string with the specified host,
- * the port is automatically appended to the host including the colon. This function takes
- * '\u002F' into account and tries to preserve them if applicable.
- * @param {string} source The source string to replace.
- * @param {string} value The string to replace with.
- * @returns {string} The resulting string.
+ * Tries to find every url in the source and append the proxy target to it.
+ * @param {string} source The source string.
+ * @param {string} rawProxyTarget The raw proxy target.
+ * @returns The resulting string
  */
-function replaceDomain(source, value) {
-  const val = 'http://' + value + ':' + port;
-  let result = source.replaceAll(proxyTarget, val);
-  result = result.replaceAll(proxyTarget.replaceAll('/', '\\u002F'), val.replaceAll('/', '\\u002F'));
-  result = result.replaceAll("https://csp.nytimes.com", val);
-  return result;
+function injectProxyTarget(source, rawProxyTarget) {
+  return source.replace(/([ '"])(\/\w)/g, `$1/${rawProxyTarget}$2`);
 }
 
-app.get('/**', async (req, res) => {
-  // console.log(req);
+/**
+ * Replaces all domains found in the source with the given proxy target. This 
+ * function takes '\u002F' into account and tries to preserve them if applicable.
+ * @param {string} source The source string to replace.
+ * @returns {string} The resulting string.
+ */
+function replaceDomainWithRelative(source) {
+  return source.replace(/(https?):(\/|\\u002f){2}/gi, '$2$1.');
+}
 
-  let response;
+/**
+ * If the head of the given html document contains a link tag for the icon,
+ * no modifications are made. Otherwise, a link tag for the icon is injected
+ * referencing '/<rawProxyTarget>/favicon.ico' with the given raw proxy target
+ * to overwrite the default '/favicon.ico' reference which the proxy has no control over.
+ * @param {string} html The html to inject the link tag into.
+ * @param {string} rawProxyTarget The raw proxy target to inject.
+ * @return {string} The new html document.
+ */
+function injectFavIcon(html, rawProxyTarget) {
+  const parts = html.split('</head>', 2);
+  if (parts[0].search(/<link.+?rel\s*?=\s*?['"]?icon['"]?.*?\/?>/i) !== -1) return html;
+  return `${parts[0]}<link rel=icon href="/${rawProxyTarget}/favicon.ico"/></head>${parts[1]}`
+}
+
+/*
+ * Get requests
+ */
+app.get('/**', async (req, res) => {
   try {
-    response = await fetch(proxyTarget + req.url, {
+    // console.log(req);
+
+    const [rawProxyTarget, proxyTarget, url] = extractProxyTarget(req.url);
+    const response = await fetch(proxyTarget + url, {
       method: "GET",
       headers: transferHeaders(req.headers, req.host)
     });
+
+    let result = await response.text();
+    const type = response.headers.get('content-type');
+    if (type.startsWith('text/html')) {
+      result = injectProxyTarget(result, rawProxyTarget);
+      result = replaceDomainWithRelative(result);
+      result = injectFavIcon(result, rawProxyTarget);
+    }
+    if (type.startsWith('text/css')) {
+      result = injectProxyTarget(result, rawProxyTarget);
+      result = replaceDomainWithRelative(result);
+    }
+
+    // console.log(result);
+    res.type(type);
+    res.status(response.status);
+    res.set(transferHeaders(response.headers, req.host));
+    // res.type('text');
+    res.send(result);
+
   } catch (error) {
     console.log(error.message);
+    res.status(500).send();
   }
-
-  let result = await response.text();
-  result = replaceDomain(result, req.host);
-  const type = response.headers.get('content-type');
-
-  // console.log(result);
-  res.type(type);
-  res.status(response.status);
-  res.set(transferHeaders(response.headers, req.host));
-  // res.type('text');
-  res.send(result);
 });
 
 app.use('/**', (req, res) => {
