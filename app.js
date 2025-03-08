@@ -1,7 +1,8 @@
-const express = require("express");
+import express from "express";
+
+const proxyTarget = "https://www.nytimes.com";
 const app = express();
 const port = 3000;
-const proxyTarget = "https://www.nytimes.com";
 
 /**
  * Transfers http headers from a list and extracts the relevant ones,
