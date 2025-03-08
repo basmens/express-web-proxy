@@ -1,4 +1,4 @@
-const express = require('express');
+const express = require("express");
 const app = express();
 const port = 3000;
 const proxyTarget = "https://www.nytimes.com";
@@ -13,24 +13,24 @@ const proxyTarget = "https://www.nytimes.com";
 function transferHeaders(source, pretendDomainSource) {
   let s = {};
   if (source instanceof Headers) {
-    source.forEach((value, key) => s[key] = value);
+    source.forEach((value, key) => (s[key] = value));
   } else {
     s = source;
   }
 
   let result = {};
-  if (s['accept']) result['accept'] = s['accept'];
-  if (s['accept-encoding']) result['accept-encoding'] = s['accept-encoding'];
-  if (s['accept-language']) result['accept-language'] = s['accept-language'];
-  if (s['accept-ranges']) result['accept-ranges'] = s['accept-ranges'];
-  if (s['age']) result['age'] = s['age'];
-  if (s['cache-control']) result['cache-control'] = s['cache-control'];
-  if (s['connection']) result['connection'] = s['connection'];
-  if (s['date']) result['date'] = s['date'];
-  if (s['user-agent']) result['user-agent'] = s['user-agent'];
-  if (s['content-security-policy'])
+  if (s["accept"]) result["accept"] = s["accept"];
+  if (s["accept-encoding"]) result["accept-encoding"] = s["accept-encoding"];
+  if (s["accept-language"]) result["accept-language"] = s["accept-language"];
+  if (s["accept-ranges"]) result["accept-ranges"] = s["accept-ranges"];
+  if (s["age"]) result["age"] = s["age"];
+  if (s["cache-control"]) result["cache-control"] = s["cache-control"];
+  if (s["connection"]) result["connection"] = s["connection"];
+  if (s["date"]) result["date"] = s["date"];
+  if (s["user-agent"]) result["user-agent"] = s["user-agent"];
+  if (s["content-security-policy"])
     // result['content-security-policy'] = replaceDomain(s['content-security-policy'], pretendDomainSource);
-    result['content-security-policy'] =
+    result["content-security-policy"] =
       "default-src 'self' data: 'unsafe-inline' 'unsafe-eval' https:; " +
       "script-src 'self' data: 'unsafe-inline' 'unsafe-eval' https: blob:; " +
       "style-src 'self' data: 'unsafe-inline' https:; " +
@@ -41,7 +41,8 @@ function transferHeaders(source, pretendDomainSource) {
       "object-src 'self' https:; " +
       "child-src 'self' https: data: blob:; " +
       "form-action 'self' https:; " +
-      "report-uri http://localhost:" + port;
+      "report-uri http://localhost:" +
+      port;
 
   return result;
 }
@@ -55,21 +56,24 @@ function transferHeaders(source, pretendDomainSource) {
  * @returns {string} The resulting string.
  */
 function replaceDomain(source, value) {
-  const val = 'http://' + value + ':' + port;
+  const val = "http://" + value + ":" + port;
   let result = source.replaceAll(proxyTarget, val);
-  result = result.replaceAll(proxyTarget.replaceAll('/', '\\u002F'), val.replaceAll('/', '\\u002F'));
+  result = result.replaceAll(
+    proxyTarget.replaceAll("/", "\\u002F"),
+    val.replaceAll("/", "\\u002F"),
+  );
   result = result.replaceAll("https://csp.nytimes.com", val);
   return result;
 }
 
-app.get('/**', async (req, res) => {
+app.get("/**", async (req, res) => {
   // console.log(req);
 
   let response;
   try {
     response = await fetch(proxyTarget + req.url, {
       method: "GET",
-      headers: transferHeaders(req.headers, req.host)
+      headers: transferHeaders(req.headers, req.host),
     });
   } catch (error) {
     console.log(error.message);
@@ -77,7 +81,7 @@ app.get('/**', async (req, res) => {
 
   let result = await response.text();
   result = replaceDomain(result, req.host);
-  const type = response.headers.get('content-type');
+  const type = response.headers.get("content-type");
 
   // console.log(result);
   res.type(type);
@@ -87,8 +91,8 @@ app.get('/**', async (req, res) => {
   res.send(result);
 });
 
-app.use('/**', (req, res) => {
-  console.log('got here')
+app.use("/**", (req, res) => {
+  console.log("got here");
   res.status(501).send();
 });
 
