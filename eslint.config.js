@@ -1,24 +1,24 @@
-import globals from "globals";
-import pluginJs from "@eslint/js";
-import eslintPluginPrettierRecommended from "eslint-plugin-prettier/recommended";
+import globals from 'globals';
+import pluginJs from '@eslint/js';
+import eslintPluginPrettierRecommended from 'eslint-plugin-prettier/recommended';
 
 /** @type {import('eslint').Linter.Config[]} */
 export default [
-  { files: ["**/*.js"], languageOptions: { sourceType: "module" } },
+  { files: ['**/*.js'], languageOptions: { sourceType: 'module' } },
   { languageOptions: { globals: globals.node } },
   {
     rules: {
-      "no-unused-vars": [
-        "error",
+      'no-unused-vars': [
+        'error',
         {
-          vars: "all",
-          args: "after-used",
-          caughtErrors: "all",
+          vars: 'all',
+          args: 'after-used',
+          caughtErrors: 'all',
           ignoreRestSiblings: false,
           reportUsedIgnorePattern: false,
-          argsIgnorePattern: "^_",
-          varsIgnorePattern: "^_",
-          caughtErrorsIgnorePattern: "^_",
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
         },
       ],
     },

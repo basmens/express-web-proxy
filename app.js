@@ -2,7 +2,7 @@ import express from 'express';
 
 const app = express();
 const port = 3000;
-const defaultBrowser = 'https://www.startpage.com/';
+const defaultBrowser = 'https://www.startpage.com';
 
 /**
  * Extracts the proxy target from the first part of the url. The proxy target will be returned raw,
@@ -13,16 +13,12 @@ const defaultBrowser = 'https://www.startpage.com/';
  * @return {[string, string, string]} The raw proxy target, processed proxy target and remaining url in that order.
  */
 function extractProxyTarget(url) {
-  if (url == '/')
-    return [defaultBrowser.replace('://', '.'), defaultBrowser, '/'];
+  if (url == '/') return [defaultBrowser.replace('://', '.'), defaultBrowser, '/'];
 
   const parts = url.substring(1).split('/');
   const rawProxyTarget = parts.shift();
   let processedProxyTarget = rawProxyTarget;
-  if (
-    processedProxyTarget.startsWith('http.') ||
-    processedProxyTarget.startsWith('https.')
-  )
+  if (processedProxyTarget.startsWith('http.') || processedProxyTarget.startsWith('https.'))
     processedProxyTarget = processedProxyTarget.replace('.', '://');
 
   return [rawProxyTarget, processedProxyTarget, '/' + parts.join('/')];
@@ -72,32 +68,44 @@ function transferHeaders(source, _pretendDomainSource) {
   return result;
 }
 
-// function replaceDomain(source, value) {
-//   const val = 'http://' + value + ':' + port;
-//   let result = source.replaceAll(proxyTarget, val);
-//   result = result.replaceAll(proxyTarget.replaceAll('/', '\\u002F'), val.replaceAll('/', '\\u002F'));
-//   result = result.replaceAll("https://csp.nytimes.com", val);
-//   return result;
-// }
-
 /**
- * Tries to find every url in the source and append the proxy target to it.
- * @param {string} source The source string.
+ * Tries to inject the proxy target into all forms of url of the given html.
+ * It generally matches these patterns, also taking \u002F into account:
+ *    '/some/url' => '/<rawProxyTarget>/some/url'
+ *    'http(s)://www.some.domain/path' => '/http(s).www.some.domain/path'
+ * @param {string} html The html string.
  * @param {string} rawProxyTarget The raw proxy target.
  * @returns The resulting string
  */
-function injectProxyTarget(source, rawProxyTarget) {
-  return source.replace(/([ '"])(\/\w)/g, `$1/${rawProxyTarget}$2`);
+function injectProxyTargetHtml(html, rawProxyTarget) {
+  let result = html.replace(/([ `'"(])(\/|\\u002f)(\w)/gi, `$1$2${rawProxyTarget}$2$3`);
+  return result.replace(/(https?):(\/|\\u002f){2}/gi, '$2$1.');
 }
 
 /**
- * Replaces all domains found in the source with the given proxy target. This
- * function takes '\u002F' into account and tries to preserve them if applicable.
- * @param {string} source The source string to replace.
- * @returns {string} The resulting string.
+ * Tries to inject the proxy target into all forms of url of the given css.
+ * It generally matches these patterns:
+ *    '/some/url' => '/<rawProxyTarget>/some/url'
+ *    'http(s)://www.some.domain/path' => '/http(s).www.some.domain/path'
+ * @param {string} css The css string.
+ * @param {string} rawProxyTarget The raw proxy target.
+ * @returns The resulting string
  */
-function replaceDomainWithRelative(source) {
-  return source.replace(/(https?):(\/|\\u002f){2}/gi, '$2$1.');
+function injectProxyTargetCss(css, rawProxyTarget) {
+  let result = css.replace(/([ `'"(])(\/|\\u002f)(\w)/gi, `$1$2${rawProxyTarget}$2$3`);
+  return result.replace(/(https?):(\/|\\u002f){2}/gi, '$2$1.');
+}
+
+/**
+ * Tries to inject the proxy target into all forms of url of the given js.
+ * It generally matches these patterns:
+ *    'fetch(someUrl' => 'fetch('/<rawProxyTarget>'+someUrl'
+ * @param {string} html The html string.
+ * @param {string} rawProxyTarget The raw proxy target.
+ * @returns The resulting string
+ */
+function injectProxyTargetJs(js, rawProxyTarget) {
+  return js.replace(/fetch\(\s*?([`'"\w])/g, `fetch('/${rawProxyTarget}'+$1`);
 }
 
 /**
@@ -111,8 +119,7 @@ function replaceDomainWithRelative(source) {
  */
 function injectFavIcon(html, rawProxyTarget) {
   const parts = html.split('</head>', 2);
-  if (parts[0].search(/<link.+?rel\s*?=\s*?['"]?icon['"]?.*?\/?>/i) !== -1)
-    return html;
+  if (parts[0].search(/<link.+?rel\s*?=\s*?['"]?icon['"]?.*?\/?>/i) !== -1) return html;
   return `${parts[0]}<link rel=icon href="/${rawProxyTarget}/favicon.ico"/></head>${parts[1]}`;
 }
 
@@ -129,24 +136,22 @@ app.get('/**', async (req, res, next) => {
       headers: transferHeaders(req.headers, req.host),
     });
 
-    let result = await response.text();
+    let body = await response.text();
     const type = response.headers.get('content-type');
     if (type.startsWith('text/html')) {
-      result = injectProxyTarget(result, rawProxyTarget);
-      result = replaceDomainWithRelative(result);
-      result = injectFavIcon(result, rawProxyTarget);
+      body = injectProxyTargetHtml(body, rawProxyTarget);
+      body = injectFavIcon(body, rawProxyTarget);
     }
-    if (type.startsWith('text/css')) {
-      result = injectProxyTarget(result, rawProxyTarget);
-      result = replaceDomainWithRelative(result);
-    }
+    if (type.startsWith('text/css')) body = injectProxyTargetCss(body, rawProxyTarget);
+    if (type.startsWith('text/javascript') || type.startsWith('application/javascript'))
+      body = injectProxyTargetJs(body, rawProxyTarget);
 
     // console.log(result);
     res.type(type);
     res.status(response.status);
     res.set(transferHeaders(response.headers, req.host));
     // res.type('text');
-    res.send(result);
+    res.send(body);
   } catch (err) {
     next(err);
   }
