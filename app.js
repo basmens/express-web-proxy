@@ -1,7 +1,8 @@
-const express = require('express');
+import express from "express";
+
 const app = express();
 const port = 3000;
-const defaultBrowser = 'https://www.startpage.com/';
+const defaultBrowser = "https://www.startpage.com/";
 
 /**
  * Extracts the proxy target from the first part of the url. The proxy target will be returned raw,
@@ -12,15 +13,19 @@ const defaultBrowser = 'https://www.startpage.com/';
  * @return {[string, string, string]} The raw proxy target, processed proxy target and remaining url in that order.
  */
 function extractProxyTarget(url) {
-  if (url == '/') return [defaultBrowser.replace('://', '.'), defaultBrowser, '/'];
+  if (url == "/")
+    return [defaultBrowser.replace("://", "."), defaultBrowser, "/"];
 
-  const parts = url.substring(1).split('/');
+  const parts = url.substring(1).split("/");
   const rawProxyTarget = parts.shift();
   let processedProxyTarget = rawProxyTarget;
-  if (processedProxyTarget.startsWith('http.') || processedProxyTarget.startsWith('https.'))
-    processedProxyTarget = processedProxyTarget.replace('.', '://');
+  if (
+    processedProxyTarget.startsWith("http.") ||
+    processedProxyTarget.startsWith("https.")
+  )
+    processedProxyTarget = processedProxyTarget.replace(".", "://");
 
-  return [rawProxyTarget, processedProxyTarget, '/' + parts.join('/')];
+  return [rawProxyTarget, processedProxyTarget, "/" + parts.join("/")];
 }
 
 /**
@@ -30,27 +35,27 @@ function extractProxyTarget(url) {
  * @param {string} pretendDomainSource The source domain the headers should pretend by.
  * @returns {Object.<string, string>} The transferred headers.
  */
-function transferHeaders(source, pretendDomainSource) {
+function transferHeaders(source, _pretendDomainSource) {
   let s = {};
   if (source instanceof Headers) {
-    source.forEach((value, key) => s[key] = value);
+    source.forEach((value, key) => (s[key] = value));
   } else {
     s = source;
   }
 
   let result = {};
-  if (s['accept']) result['accept'] = s['accept'];
-  if (s['accept-encoding']) result['accept-encoding'] = s['accept-encoding'];
-  if (s['accept-language']) result['accept-language'] = s['accept-language'];
-  if (s['accept-ranges']) result['accept-ranges'] = s['accept-ranges'];
-  if (s['age']) result['age'] = s['age'];
-  if (s['cache-control']) result['cache-control'] = s['cache-control'];
-  if (s['connection']) result['connection'] = s['connection'];
-  if (s['date']) result['date'] = s['date'];
-  if (s['user-agent']) result['user-agent'] = s['user-agent'];
-  if (s['content-security-policy'])
+  if (s["accept"]) result["accept"] = s["accept"];
+  if (s["accept-encoding"]) result["accept-encoding"] = s["accept-encoding"];
+  if (s["accept-language"]) result["accept-language"] = s["accept-language"];
+  if (s["accept-ranges"]) result["accept-ranges"] = s["accept-ranges"];
+  if (s["age"]) result["age"] = s["age"];
+  if (s["cache-control"]) result["cache-control"] = s["cache-control"];
+  if (s["connection"]) result["connection"] = s["connection"];
+  if (s["date"]) result["date"] = s["date"];
+  if (s["user-agent"]) result["user-agent"] = s["user-agent"];
+  if (s["content-security-policy"])
     // result['content-security-policy'] = replaceDomain(s['content-security-policy'], pretendDomainSource);
-    result['content-security-policy'] =
+    result["content-security-policy"] =
       "default-src 'self' data: 'unsafe-inline' 'unsafe-eval' https:; " +
       "script-src 'self' data: 'unsafe-inline' 'unsafe-eval' https: blob:; " +
       "style-src 'self' data: 'unsafe-inline' https:; " +
@@ -61,7 +66,8 @@ function transferHeaders(source, pretendDomainSource) {
       "object-src 'self' https:; " +
       "child-src 'self' https: data: blob:; " +
       "form-action 'self' https:; " +
-      "report-uri http://localhost:" + port;
+      "report-uri http://localhost:" +
+      port;
 
   return result;
 }
@@ -85,13 +91,13 @@ function injectProxyTarget(source, rawProxyTarget) {
 }
 
 /**
- * Replaces all domains found in the source with the given proxy target. This 
+ * Replaces all domains found in the source with the given proxy target. This
  * function takes '\u002F' into account and tries to preserve them if applicable.
  * @param {string} source The source string to replace.
  * @returns {string} The resulting string.
  */
 function replaceDomainWithRelative(source) {
-  return source.replace(/(https?):(\/|\\u002f){2}/gi, '$2$1.');
+  return source.replace(/(https?):(\/|\\u002f){2}/gi, "$2$1.");
 }
 
 /**
@@ -104,32 +110,33 @@ function replaceDomainWithRelative(source) {
  * @return {string} The new html document.
  */
 function injectFavIcon(html, rawProxyTarget) {
-  const parts = html.split('</head>', 2);
-  if (parts[0].search(/<link.+?rel\s*?=\s*?['"]?icon['"]?.*?\/?>/i) !== -1) return html;
-  return `${parts[0]}<link rel=icon href="/${rawProxyTarget}/favicon.ico"/></head>${parts[1]}`
+  const parts = html.split("</head>", 2);
+  if (parts[0].search(/<link.+?rel\s*?=\s*?['"]?icon['"]?.*?\/?>/i) !== -1)
+    return html;
+  return `${parts[0]}<link rel=icon href="/${rawProxyTarget}/favicon.ico"/></head>${parts[1]}`;
 }
 
 /*
  * Get requests
  */
-app.get('/**', async (req, res) => {
+app.get("/**", async (req, res) => {
   try {
     // console.log(req);
 
     const [rawProxyTarget, proxyTarget, url] = extractProxyTarget(req.url);
     const response = await fetch(proxyTarget + url, {
       method: "GET",
-      headers: transferHeaders(req.headers, req.host)
+      headers: transferHeaders(req.headers, req.host),
     });
 
     let result = await response.text();
-    const type = response.headers.get('content-type');
-    if (type.startsWith('text/html')) {
+    const type = response.headers.get("content-type");
+    if (type.startsWith("text/html")) {
       result = injectProxyTarget(result, rawProxyTarget);
       result = replaceDomainWithRelative(result);
       result = injectFavIcon(result, rawProxyTarget);
     }
-    if (type.startsWith('text/css')) {
+    if (type.startsWith("text/css")) {
       result = injectProxyTarget(result, rawProxyTarget);
       result = replaceDomainWithRelative(result);
     }
@@ -140,15 +147,14 @@ app.get('/**', async (req, res) => {
     res.set(transferHeaders(response.headers, req.host));
     // res.type('text');
     res.send(result);
-
   } catch (error) {
     console.log(error.message);
     res.status(500).send();
   }
 });
 
-app.use('/**', (req, res) => {
-  console.log('got here')
+app.use("/**", (req, res) => {
+  console.log("got here");
   res.status(501).send();
 });
 
