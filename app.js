@@ -77,7 +77,7 @@ function transferHeaders(source, _pretendDomainSource) {
  *    'http(s)://www.some.domain/path' => '/http(s).www.some.domain/path'
  * @param {string} html The html string.
  * @param {string} rawProxyTarget The raw proxy target.
- * @returns The resulting string
+ * @returns The resulting string.
  */
 function injectProxyTargetHtml(html, rawProxyTarget) {
   let result = html.replace(/([ `'"(])(\/|\\u002f)(\w)/gi, `$1$2${rawProxyTarget}$2$3`);
@@ -91,7 +91,7 @@ function injectProxyTargetHtml(html, rawProxyTarget) {
  *    'http(s)://www.some.domain/path' => '/http(s).www.some.domain/path'
  * @param {string} css The css string.
  * @param {string} rawProxyTarget The raw proxy target.
- * @returns The resulting string
+ * @returns The resulting string.
  */
 function injectProxyTargetCss(css, rawProxyTarget) {
   let result = css.replace(/([ `'"(])(\/|\\u002f)(\w)/gi, `$1$2${rawProxyTarget}$2$3`);
@@ -104,25 +104,10 @@ function injectProxyTargetCss(css, rawProxyTarget) {
  *    'fetch(someUrl' => 'fetch('/<rawProxyTarget>'+someUrl'
  * @param {string} html The html string.
  * @param {string} rawProxyTarget The raw proxy target.
- * @returns The resulting string
+ * @returns The resulting string.
  */
 function injectProxyTargetJs(js, rawProxyTarget) {
   return js.replace(/fetch\(\s*?([`'"\w])/g, `fetch('/${rawProxyTarget}'+$1`);
-}
-
-/**
- * If the head of the given html document contains a link tag for the icon,
- * no modifications are made. Otherwise, a link tag for the icon is injected
- * referencing '/<rawProxyTarget>/favicon.ico' with the given raw proxy target
- * to overwrite the default '/favicon.ico' reference which the proxy has no control over.
- * @param {string} html The html to inject the link tag into.
- * @param {string} rawProxyTarget The raw proxy target to inject.
- * @return {string} The new html document.
- */
-function injectFavIcon(html, rawProxyTarget) {
-  const parts = html.split('</head>', 2);
-  if (parts[0].search(/<link.+?rel\s*?=\s*?['"]?icon['"]?.*?\/?>/i) !== -1) return html;
-  return `${parts[0]}<link rel=icon href="/${rawProxyTarget}/favicon.ico"/></head>${parts[1]}`;
 }
 
 app.use(cookieParser());
@@ -136,32 +121,74 @@ app.use((req, res, next) => {
  */
 app.get('/**', async (req, res, next) => {
   try {
-    // console.log(req);
-
     const response = await fetch(req.proxyTarget + req.url, {
       method: 'GET',
-      headers: transferHeaders(req.headers, req.host),
+      headers: transferHeaders(req.headers, req.proxyTarget.split('://')[1]),
     });
 
-    let body = await response.text();
-    const type = response.headers.get('content-type');
-
-    const rawProxyTarget = req.proxyTarget.replace('://', '.');
-    if (type.startsWith('text/html')) {
-      body = injectProxyTargetHtml(body, rawProxyTarget);
-      body = injectFavIcon(body, rawProxyTarget);
-
-      res.cookie('proxyTarget', req.proxyTarget, { maxAge: 9000000000, httpOnly: false, secure: true });
-    }
-    if (type.startsWith('text/css')) body = injectProxyTargetCss(body, rawProxyTarget);
-    if (type.startsWith('text/javascript') || type.startsWith('application/javascript'))
-      body = injectProxyTargetJs(body, rawProxyTarget);
-
-    // console.log(result);
-    res.type(type);
     res.status(response.status);
     res.set(transferHeaders(response.headers, req.host));
-    // res.type('text');
+
+    const type = response.headers.get('content-type');
+    if (!type) {
+      res.send();
+      return;
+    }
+
+    let body;
+    const rawProxyTarget = req.proxyTarget.replace('://', '.');
+    if (type.includes('html')) {
+      body = injectProxyTargetHtml(await response.text(), rawProxyTarget);
+      res.cookie('proxyTarget', req.proxyTarget, { maxAge: 9000000000, httpOnly: false, secure: true });
+    } else if (type.includes('css')) {
+      body = injectProxyTargetCss(await response.text(), rawProxyTarget);
+    } else if (type.includes('javascript')) {
+      body = injectProxyTargetJs(await response.text(), rawProxyTarget);
+    } else {
+      body = Buffer.from(await (await response.blob()).arrayBuffer());
+    }
+
+    res.type(type);
+    res.send(body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/*
+ * Post requests
+ */
+app.post('/**', async (req, res, next) => {
+  try {
+    const response = await fetch(req.proxyTarget + req.url, {
+      method: 'POST',
+      headers: transferHeaders(req.headers, req.proxyTarget.split('://')[1]),
+    });
+
+    res.status(response.status);
+    res.set(transferHeaders(response.headers, req.host));
+
+    const type = response.headers.get('content-type');
+    if (!type) {
+      res.send();
+      return;
+    }
+
+    let body;
+    const rawProxyTarget = req.proxyTarget.replace('://', '.');
+    if (type.includes('html')) {
+      body = injectProxyTargetHtml(await response.text(), rawProxyTarget);
+    } else if (type.includes('css')) {
+      body = injectProxyTargetCss(await response.text(), rawProxyTarget);
+    } else if (type.includes('javascript')) {
+      body = injectProxyTargetJs(await response.text(), rawProxyTarget);
+    } else {
+      (await response.blob()).arrayBuffer().then((buf) => {
+        body = Buffer.from(buf);
+      });
+    }
+
+    res.type(type);
     res.send(body);
   } catch (err) {
     next(err);
