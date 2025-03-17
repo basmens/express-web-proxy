@@ -1,27 +1,29 @@
 import express from 'express';
+import cookieParser from 'cookie-parser';
 
 const app = express();
 const port = 3000;
 const defaultBrowser = 'https://www.startpage.com';
 
 /**
- * Extracts the proxy target from the first part of the url. The proxy target will be returned raw,
- * but also if the first part starts with 'http.' or 'https.', then the dot will be replaced with '://'.
- * This processed proxy with then be returned as well. Finally, the rest of the url will be returned.
- * For example: '/https.example.com/some/url' => ['https.example.com', 'https://example.com', '/some/url'].
- * @param {string} url The url to split up.
- * @return {[string, string, string]} The raw proxy target, processed proxy target and remaining url in that order.
+ * Takes the req and finds the proxy target. It modifies the req to set the url to the url without
+ * any proxy targeting included. The req gains a proxyTarget attribute.
+ * @param {Request} req The req.
  */
-function extractProxyTarget(url) {
-  if (url == '/') return [defaultBrowser.replace('://', '.'), defaultBrowser, '/'];
+function doProxyTargeting(req) {
+  if (req.url.startsWith('/http')) {
+    const parts = req.url.substring(1).split('/');
+    req.proxyTarget = parts.shift().replace('.', '://');
+    req.url = '/' + parts.join('/');
+    return;
+  }
 
-  const parts = url.substring(1).split('/');
-  const rawProxyTarget = parts.shift();
-  let processedProxyTarget = rawProxyTarget;
-  if (processedProxyTarget.startsWith('http.') || processedProxyTarget.startsWith('https.'))
-    processedProxyTarget = processedProxyTarget.replace('.', '://');
+  if (req.cookies.proxyTarget) {
+    req.proxyTarget = req.cookies.proxyTarget;
+    return;
+  }
 
-  return [rawProxyTarget, processedProxyTarget, '/' + parts.join('/')];
+  req.proxyTarget = defaultBrowser;
 }
 
 /**
@@ -123,6 +125,12 @@ function injectFavIcon(html, rawProxyTarget) {
   return `${parts[0]}<link rel=icon href="/${rawProxyTarget}/favicon.ico"/></head>${parts[1]}`;
 }
 
+app.use(cookieParser());
+app.use((req, res, next) => {
+  if (!req.proxyTarget) doProxyTargeting(req);
+  next();
+});
+
 /*
  * Get requests
  */
@@ -130,17 +138,20 @@ app.get('/**', async (req, res, next) => {
   try {
     // console.log(req);
 
-    const [rawProxyTarget, proxyTarget, url] = extractProxyTarget(req.url);
-    const response = await fetch(proxyTarget + url, {
+    const response = await fetch(req.proxyTarget + req.url, {
       method: 'GET',
       headers: transferHeaders(req.headers, req.host),
     });
 
     let body = await response.text();
     const type = response.headers.get('content-type');
+
+    const rawProxyTarget = req.proxyTarget.replace('://', '.');
     if (type.startsWith('text/html')) {
       body = injectProxyTargetHtml(body, rawProxyTarget);
       body = injectFavIcon(body, rawProxyTarget);
+
+      res.cookie('proxyTarget', req.proxyTarget, { maxAge: 9000000000, httpOnly: false, secure: true });
     }
     if (type.startsWith('text/css')) body = injectProxyTargetCss(body, rawProxyTarget);
     if (type.startsWith('text/javascript') || type.startsWith('application/javascript'))
