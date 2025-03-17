@@ -30,29 +30,20 @@ function doProxyTargeting(req) {
  * Transfers http headers from a list and extracts the relevant ones,
  * and potentially modifies them, to return them as a new object.
  * @param {Object.<string, string> | Headers} source The source map of headers.
- * @param {string} pretendDomainSource The source domain the headers should pretend by.
+ * @param {string} pretendDomain The source domain the headers should pretend by.
  * @returns {Object.<string, string>} The transferred headers.
  */
-function transferHeaders(source, _pretendDomainSource) {
-  let s = {};
+function transferHeaders(source, pretendDomain) {
+  let result = {};
   if (source instanceof Headers) {
-    source.forEach((value, key) => (s[key] = value));
+    source.forEach((value, key) => (result[key] = value));
   } else {
-    s = source;
+    result = { ...source };
   }
 
-  let result = {};
-  if (s['accept']) result['accept'] = s['accept'];
-  if (s['accept-encoding']) result['accept-encoding'] = s['accept-encoding'];
-  if (s['accept-language']) result['accept-language'] = s['accept-language'];
-  if (s['accept-ranges']) result['accept-ranges'] = s['accept-ranges'];
-  if (s['age']) result['age'] = s['age'];
-  if (s['cache-control']) result['cache-control'] = s['cache-control'];
-  if (s['connection']) result['connection'] = s['connection'];
-  if (s['date']) result['date'] = s['date'];
-  if (s['user-agent']) result['user-agent'] = s['user-agent'];
-  if (s['content-security-policy'])
-    // result['content-security-policy'] = replaceDomain(s['content-security-policy'], pretendDomainSource);
+  if (result.host) result.host = pretendDomain;
+  if (result.origin) result.origin = pretendDomain;
+  if (result['content-security-policy'])
     result['content-security-policy'] =
       "default-src 'self' data: 'unsafe-inline' 'unsafe-eval' https:; " +
       "script-src 'self' data: 'unsafe-inline' 'unsafe-eval' https: blob:; " +
@@ -66,6 +57,11 @@ function transferHeaders(source, _pretendDomainSource) {
       "form-action 'self' https:; " +
       'report-uri http://localhost:' +
       port;
+
+  if (result['content-length']) delete result['content-length'];
+  if (result['content-encoding']) delete result['content-encoding'];
+  if (result['cookie']) delete result['cookie'];
+  if (result['set-cookie']) delete result['set-cookie'];
 
   return result;
 }
@@ -111,6 +107,7 @@ function injectProxyTargetJs(js, rawProxyTarget) {
 }
 
 app.use(cookieParser());
+app.use(express.text({ type: '*/*' }));
 app.use((req, res, next) => {
   if (!req.proxyTarget) doProxyTargeting(req);
   next();
@@ -121,6 +118,7 @@ app.use((req, res, next) => {
  */
 app.get('/**', async (req, res, next) => {
   try {
+    // console.log(req.proxyTarget + req.url);
     const response = await fetch(req.proxyTarget + req.url, {
       method: 'GET',
       headers: transferHeaders(req.headers, req.proxyTarget.split('://')[1]),
@@ -147,8 +145,6 @@ app.get('/**', async (req, res, next) => {
     } else {
       body = Buffer.from(await (await response.blob()).arrayBuffer());
     }
-
-    res.type(type);
     res.send(body);
   } catch (err) {
     next(err);
@@ -163,6 +159,7 @@ app.post('/**', async (req, res, next) => {
     const response = await fetch(req.proxyTarget + req.url, {
       method: 'POST',
       headers: transferHeaders(req.headers, req.proxyTarget.split('://')[1]),
+      body: req.body,
     });
 
     res.status(response.status);
@@ -187,8 +184,6 @@ app.post('/**', async (req, res, next) => {
         body = Buffer.from(buf);
       });
     }
-
-    res.type(type);
     res.send(body);
   } catch (err) {
     next(err);
