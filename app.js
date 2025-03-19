@@ -3,7 +3,7 @@ import cookieParser from 'cookie-parser';
 
 const app = express();
 const port = 3000;
-const defaultBrowser = 'https://www.startpage.com';
+const defaultBrowser = 'https://www.example.com';
 
 /**
  * Takes the req and finds the proxy target. It modifies the req to set the url to the url without
@@ -30,10 +30,11 @@ function doProxyTargeting(req) {
  * Transfers http headers from a list and extracts the relevant ones,
  * and potentially modifies them, to return them as a new object.
  * @param {Object.<string, string> | Headers} source The source map of headers.
+ * @param {string} proxyDomain The domain of the proxy.
  * @param {string} pretendDomain The source domain the headers should pretend by.
  * @returns {Object.<string, string>} The transferred headers.
  */
-function transferHeaders(source, pretendDomain) {
+function transferHeaders(source, proxyDomain, pretendDomain) {
   let result = {};
   if (source instanceof Headers) {
     source.forEach((value, key) => (result[key] = value));
@@ -55,8 +56,7 @@ function transferHeaders(source, pretendDomain) {
       "object-src 'self' https:; " +
       "child-src 'self' https: data: blob:; " +
       "form-action 'self' https:; " +
-      'report-uri http://localhost:' +
-      port;
+      `report-uri http://${proxyDomain}/debug/csp`;
 
   if (result['content-length']) delete result['content-length'];
   if (result['content-encoding']) delete result['content-encoding'];
@@ -108,6 +108,12 @@ function injectProxyTargetJs(js, rawProxyTarget) {
 
 app.use(cookieParser());
 app.use(express.text({ type: '*/*' }));
+
+app.post('/debug/csp', (req, res) => {
+  console.log(`CSP violation while proxying ${req.cookies.proxyTarget}: ${req.body}`);
+  res.status(200).send();
+});
+
 app.use((req, res, next) => {
   if (!req.proxyTarget) doProxyTargeting(req);
   next();
