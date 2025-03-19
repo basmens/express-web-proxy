@@ -67,43 +67,18 @@ function transferHeaders(source, proxyDomain, pretendDomain) {
 }
 
 /**
- * Tries to inject the proxy target into all forms of url of the given html.
- * It generally matches these patterns, also taking \u002F into account:
- *    '/some/url' => '/<rawProxyTarget>/some/url'
- *    'http(s)://www.some.domain/path' => '/http(s).www.some.domain/path'
+ * Tries to inject the proxy target into the given html. It replaces http(s)://path?query
+ * with http://proxyDomain/http(s).path?query.
  * @param {string} html The html string.
  * @param {string} rawProxyTarget The raw proxy target.
  * @returns The resulting string.
  */
-function injectProxyTargetHtml(html, rawProxyTarget) {
-  let result = html.replace(/([ `'"(])(\/|\\u002f)(\w)/gi, `$1$2${rawProxyTarget}$2$3`);
-  return result.replace(/(https?):(\/|\\u002f){2}/gi, '$2$1.');
-}
+function injectProxyTarget(html, proxyDomain) {
+  const urlRegex = /(?:(https?):)?(\/|\\u002f){2}([^"<\s?]*)([^"<\s]*)/gi;
 
-/**
- * Tries to inject the proxy target into all forms of url of the given css.
- * It generally matches these patterns:
- *    '/some/url' => '/<rawProxyTarget>/some/url'
- *    'http(s)://www.some.domain/path' => '/http(s).www.some.domain/path'
- * @param {string} css The css string.
- * @param {string} rawProxyTarget The raw proxy target.
- * @returns The resulting string.
- */
-function injectProxyTargetCss(css, rawProxyTarget) {
-  let result = css.replace(/([ `'"(])(\/|\\u002f)(\w)/gi, `$1$2${rawProxyTarget}$2$3`);
-  return result.replace(/(https?):(\/|\\u002f){2}/gi, '$2$1.');
-}
-
-/**
- * Tries to inject the proxy target into all forms of url of the given js.
- * It generally matches these patterns:
- *    'fetch(someUrl' => 'fetch('/<rawProxyTarget>'+someUrl'
- * @param {string} html The html string.
- * @param {string} rawProxyTarget The raw proxy target.
- * @returns The resulting string.
- */
-function injectProxyTargetJs(js, rawProxyTarget) {
-  return js.replace(/fetch\(\s*?([`'"\w])/g, `fetch('/${rawProxyTarget}'+$1`);
+  return html.replace(urlRegex, (_full, protocol, delimiter, path, query) => {
+    return `http:${delimiter.repeat(2)}${proxyDomain}${delimiter}${protocol ? protocol : 'http'}.${path}${query}`;
+  });
 }
 
 app.use(cookieParser());
@@ -116,60 +91,22 @@ app.post('/debug/csp', (req, res) => {
 
 app.use((req, res, next) => {
   if (!req.proxyTarget) doProxyTargeting(req);
+  if (req.proxyTarget.includes(req.host)) doProxyTargeting(req); // Try again
   next();
 });
 
-/*
- * Get requests
- */
-app.get('/**', async (req, res, next) => {
+app.all('/**', async (req, res, next) => {
   try {
-    // console.log(req.proxyTarget + req.url);
+    const host = req.headers.host;
+    if (req.method === 'GET') req.body = undefined;
     const response = await fetch(req.proxyTarget + req.url, {
-      method: 'GET',
-      headers: transferHeaders(req.headers, req.proxyTarget.split('://')[1]),
-    });
-
-    res.status(response.status);
-    res.set(transferHeaders(response.headers, req.host));
-
-    const type = response.headers.get('content-type');
-    if (!type) {
-      res.send();
-      return;
-    }
-
-    let body;
-    const rawProxyTarget = req.proxyTarget.replace('://', '.');
-    if (type.includes('html')) {
-      body = injectProxyTargetHtml(await response.text(), rawProxyTarget);
-      res.cookie('proxyTarget', req.proxyTarget, { maxAge: 9000000000, httpOnly: false, secure: true });
-    } else if (type.includes('css')) {
-      body = injectProxyTargetCss(await response.text(), rawProxyTarget);
-    } else if (type.includes('javascript')) {
-      body = injectProxyTargetJs(await response.text(), rawProxyTarget);
-    } else {
-      body = Buffer.from(await (await response.blob()).arrayBuffer());
-    }
-    res.send(body);
-  } catch (err) {
-    next(err);
-  }
-});
-
-/*
- * Post requests
- */
-app.post('/**', async (req, res, next) => {
-  try {
-    const response = await fetch(req.proxyTarget + req.url, {
-      method: 'POST',
-      headers: transferHeaders(req.headers, req.proxyTarget.split('://')[1]),
+      method: req.method,
+      headers: transferHeaders(req.headers, host, req.proxyTarget.split('://')[1]),
       body: req.body,
     });
 
     res.status(response.status);
-    res.set(transferHeaders(response.headers, req.host));
+    res.set(transferHeaders(response.headers, host, host));
 
     const type = response.headers.get('content-type');
     if (!type) {
@@ -177,18 +114,14 @@ app.post('/**', async (req, res, next) => {
       return;
     }
 
+    if (req.method === 'GET' || type.includes('html'))
+      res.cookie('proxyTarget', req.proxyTarget, { maxAge: 9000000000, httpOnly: false, secure: true });
+
     let body;
-    const rawProxyTarget = req.proxyTarget.replace('://', '.');
-    if (type.includes('html')) {
-      body = injectProxyTargetHtml(await response.text(), rawProxyTarget);
-    } else if (type.includes('css')) {
-      body = injectProxyTargetCss(await response.text(), rawProxyTarget);
-    } else if (type.includes('javascript')) {
-      body = injectProxyTargetJs(await response.text(), rawProxyTarget);
+    if (type.includes('html') || type.includes('css') || type.includes('javascript')) {
+      body = injectProxyTarget(await response.text(), host);
     } else {
-      (await response.blob()).arrayBuffer().then((buf) => {
-        body = Buffer.from(buf);
-      });
+      body = Buffer.from(await (await response.blob()).arrayBuffer());
     }
     res.send(body);
   } catch (err) {
