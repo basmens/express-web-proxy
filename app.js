@@ -97,8 +97,8 @@ app.use((req, res, next) => {
 
 app.all('/**', async (req, res, next) => {
   try {
-    const host = req.headers.host;
-    if (req.method === 'GET') req.body = undefined;
+    const host = req.headers.host; // This includes the port
+    if ('GET HEAD TRACE'.includes(req.method) || Object.keys(req.body).length === 0) req.body = undefined;
     const response = await fetch(req.proxyTarget + req.url, {
       method: req.method,
       headers: transferHeaders(req.headers, host, req.proxyTarget.split('://')[1]),
