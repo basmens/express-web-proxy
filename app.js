@@ -5,6 +5,10 @@ const app = express();
 const port = 3000;
 const defaultBrowser = 'https://www.example.com';
 
+let recentRequests = [];
+const timeoutWindow = 3000; // Time window for the requests to count in ms
+const timeoutCount = 2; // Max amount of allowed requests for that time window, inclusive
+
 /**
  * Takes the req and finds the proxy target. It modifies the req to set the url to the url without
  * any proxy targeting included. The req gains a proxyTarget attribute.
@@ -92,6 +96,36 @@ app.post('/debug/csp', (req, res) => {
 app.use((req, res, next) => {
   if (!req.proxyTarget) doProxyTargeting(req);
   if (req.proxyTarget.includes(req.host)) doProxyTargeting(req); // Try again
+  next();
+});
+
+app.all('/**', (req, res, next) => {
+  const now = new Date().getTime();
+  recentRequests.push({
+    ip: req.ip,
+    'user-agent': req.headers['user-agent'],
+    proxyTarget: req.proxyTarget,
+    path: req.path,
+    time: now,
+  });
+
+  while (recentRequests.length > 0 && now - recentRequests[0].time > timeoutWindow) recentRequests.shift();
+
+  let count = 0;
+  for (const r of recentRequests) {
+    if (
+      r.ip === req.ip &&
+      r['user-agent'] === req.headers['user-agent'] &&
+      r.proxyTarget === req.proxyTarget &&
+      r.path === req.path
+    )
+      count++;
+  }
+
+  if (count > timeoutCount) {
+    res.status(429).send();
+    return;
+  }
   next();
 });
 
