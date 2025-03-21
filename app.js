@@ -1,5 +1,6 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
+import { Readable } from 'stream';
 
 const app = express();
 const port = 3000;
@@ -82,7 +83,6 @@ function injectProxyTarget(html, proxyDomain) {
 }
 
 app.use(cookieParser());
-app.use(express.text({ type: '*/*' }));
 
 app.post('/debug/csp', (req, res) => {
   console.log(`CSP violation while proxying ${req.cookies.proxyTarget}: ${req.body}`);
@@ -98,11 +98,12 @@ app.use((req, res, next) => {
 app.all('/**', async (req, res, next) => {
   try {
     const host = req.headers.host; // This includes the port
-    if (['GET', 'HEAD', 'TRACE'].includes(req.method) || Object.keys(req.body).length === 0) req.body = undefined;
+    const bodyStream = ['GET', 'HEAD', 'TRACE'].includes(req.method) ? undefined : Readable.toWeb(req);
     const response = await fetch(req.proxyTarget + req.url, {
       method: req.method,
       headers: transferHeaders(req.headers, host, req.proxyTarget.split('://')[1]),
-      body: req.body,
+      body: bodyStream,
+      duplex: 'half',
     });
 
     res.status(response.status);
