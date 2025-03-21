@@ -6,6 +6,10 @@ const app = express();
 const port = 3000;
 const defaultBrowser = 'https://www.example.com';
 
+let recentRequests = [];
+const rateLimitWindow = 3000; // Time window for the requests to count in ms
+const rateLimitCount = 2; // Max amount of allowed requests for that time window, inclusive
+
 /**
  * Takes the req and finds the proxy target. It modifies the req to set the url to the url without
  * any proxy targeting included. The req gains a proxyTarget attribute.
@@ -82,19 +86,64 @@ function injectProxyTarget(html, proxyDomain) {
   });
 }
 
+/*
+ * Parse cookies and body
+ */
 app.use(cookieParser());
 
+/*
+ * Content security endpoint for debugging
+ */
 app.post('/debug/csp', (req, res) => {
   console.log(`CSP violation while proxying ${req.cookies.proxyTarget}: ${req.body}`);
   res.status(200).send();
 });
 
+/*
+ * Infer proxy target
+ */
 app.use((req, res, next) => {
   if (!req.proxyTarget) doProxyTargeting(req);
   if (req.proxyTarget.includes(req.host)) doProxyTargeting(req); // Try again
   next();
 });
 
+/*
+ * Do rate limiting
+ */
+app.all('/**', (req, res, next) => {
+  const now = new Date().getTime();
+  recentRequests.push({
+    ip: req.ip,
+    'user-agent': req.headers['user-agent'],
+    proxyTarget: req.proxyTarget,
+    path: req.path,
+    time: now,
+  });
+
+  while (recentRequests.length > 0 && now - recentRequests[0].time > rateLimitWindow) recentRequests.shift();
+
+  let count = 0;
+  for (const r of recentRequests) {
+    if (
+      r.ip === req.ip &&
+      r['user-agent'] === req.headers['user-agent'] &&
+      r.proxyTarget === req.proxyTarget &&
+      r.path === req.path
+    )
+      count++;
+  }
+
+  if (count > rateLimitCount) {
+    res.status(429).send();
+    return;
+  }
+  next();
+});
+
+/*
+ * Proxy requests
+ */
 app.all('/**', async (req, res, next) => {
   try {
     const host = req.headers.host; // This includes the port
@@ -115,7 +164,7 @@ app.all('/**', async (req, res, next) => {
       return;
     }
 
-    if (req.method === 'GET' || type.includes('html'))
+    if (req.method === 'GET' && response.status >= 200 && response.status <= 299 && type.includes('html'))
       res.cookie('proxyTarget', req.proxyTarget, { maxAge: 9000000000, httpOnly: false, secure: true });
 
     if (
@@ -135,16 +184,17 @@ app.all('/**', async (req, res, next) => {
   }
 });
 
-app.use('/**', (req, res) => {
-  console.log('got here');
-  res.status(501).send();
-});
-
+/*
+ * Catching errors
+ */
 app.use((err, req, res, _next) => {
   console.log(err);
   res.status(500).send(err);
 });
 
+/*
+ * Start server
+ */
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
 });
