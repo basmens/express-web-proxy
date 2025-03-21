@@ -118,13 +118,18 @@ app.all('/**', async (req, res, next) => {
     if (req.method === 'GET' || type.includes('html'))
       res.cookie('proxyTarget', req.proxyTarget, { maxAge: 9000000000, httpOnly: false, secure: true });
 
-    let body;
-    if (type.includes('html') || type.includes('css') || type.includes('javascript')) {
-      body = injectProxyTarget(await response.text(), host);
+    if (
+      type.includes('html') ||
+      type.includes('css') ||
+      type.includes('javascript') ||
+      type.includes('json') ||
+      type.includes('text')
+    ) {
+      res.send(injectProxyTarget(await response.text(), host));
     } else {
-      body = Buffer.from(await (await response.blob()).arrayBuffer());
+      res.setHeader('content-length', response.headers.get('content-length'));
+      Readable.fromWeb(response.body).pipe(res);
     }
-    res.send(body);
   } catch (err) {
     next(err);
   }
