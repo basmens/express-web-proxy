@@ -78,7 +78,7 @@ function transferHeaders(source, proxyDomain, pretendDomain) {
  * @returns The resulting string.
  */
 function injectProxyTarget(html, proxyDomain) {
-  const urlRegex = /(?:(https?):)?(\/|\\u002f){2}([^"<\s?]*)([^"<\s]*)/gi;
+  const urlRegex = /(?:(https?):)(\/|\\u002f){2}([^"<\s?]*)([^"<\s]*)/gi;
 
   return html.replace(urlRegex, (_full, protocol, delimiter, path, query) => {
     return `http:${delimiter.repeat(2)}${proxyDomain}${delimiter}${protocol ? protocol : 'http'}.${path}${query}`;
@@ -147,7 +147,7 @@ app.all('/**', (req, res, next) => {
 app.all('/**', async (req, res, next) => {
   try {
     const host = req.headers.host; // This includes the port
-    if ('GET HEAD TRACE'.includes(req.method) || Object.keys(req.body).length === 0) req.body = undefined;
+    if (['GET', 'HEAD', 'TRACE'].includes(req.method) || Object.keys(req.body).length === 0) req.body = undefined;
     const response = await fetch(req.proxyTarget + req.url, {
       method: req.method,
       headers: transferHeaders(req.headers, host, req.proxyTarget.split('://')[1]),
