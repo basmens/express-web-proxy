@@ -1,5 +1,6 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
+import { Readable } from 'stream';
 
 const app = express();
 const port = 3000;
@@ -82,7 +83,6 @@ function injectProxyTarget(html, proxyDomain) {
 }
 
 app.use(cookieParser());
-app.use(express.text({ type: '*/*' }));
 
 app.post('/debug/csp', (req, res) => {
   console.log(`CSP violation while proxying ${req.cookies.proxyTarget}: ${req.body}`);
@@ -98,11 +98,12 @@ app.use((req, res, next) => {
 app.all('/**', async (req, res, next) => {
   try {
     const host = req.headers.host; // This includes the port
-    if (['GET', 'HEAD', 'TRACE'].includes(req.method) || Object.keys(req.body).length === 0) req.body = undefined;
+    const bodyStream = ['GET', 'HEAD', 'TRACE'].includes(req.method) ? undefined : Readable.toWeb(req);
     const response = await fetch(req.proxyTarget + req.url, {
       method: req.method,
       headers: transferHeaders(req.headers, host, req.proxyTarget.split('://')[1]),
-      body: req.body,
+      body: bodyStream,
+      duplex: 'half',
     });
 
     res.status(response.status);
@@ -117,13 +118,18 @@ app.all('/**', async (req, res, next) => {
     if (req.method === 'GET' || type.includes('html'))
       res.cookie('proxyTarget', req.proxyTarget, { maxAge: 9000000000, httpOnly: false, secure: true });
 
-    let body;
-    if (type.includes('html') || type.includes('css') || type.includes('javascript')) {
-      body = injectProxyTarget(await response.text(), host);
+    if (
+      type.includes('html') ||
+      type.includes('css') ||
+      type.includes('javascript') ||
+      type.includes('json') ||
+      type.includes('text')
+    ) {
+      res.send(injectProxyTarget(await response.text(), host));
     } else {
-      body = Buffer.from(await (await response.blob()).arrayBuffer());
+      res.setHeader('content-length', response.headers.get('content-length'));
+      Readable.fromWeb(response.body).pipe(res);
     }
-    res.send(body);
   } catch (err) {
     next(err);
   }
