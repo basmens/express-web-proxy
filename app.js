@@ -163,7 +163,7 @@ app.all('/**', async (req, res, next) => {
       return;
     }
 
-    if (req.method === 'GET' || type.includes('html'))
+    if (req.method === 'GET' && response.status >= 200 && response.status <= 299 && type.includes('html'))
       res.cookie('proxyTarget', req.proxyTarget, { maxAge: 9000000000, httpOnly: false, secure: true });
 
     let body;
