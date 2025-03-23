@@ -94,8 +94,9 @@ app.use(cookieParser());
 /*
  * Content security endpoint for debugging
  */
+app.post('/debug/csp', express.json({ type: '*/csp-report' }));
 app.post('/debug/csp', (req, res) => {
-  console.log(`CSP violation while proxying ${req.cookies.proxyTarget}: ${req.body}`);
+  console.log(`CSP violation while proxying ${req.cookies.proxyTarget}: ${JSON.stringify(req.body, undefined, 2)}`);
   res.status(200).send();
 });
 
