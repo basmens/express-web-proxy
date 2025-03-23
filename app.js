@@ -1,6 +1,7 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import { Readable } from 'stream';
+import cookie from 'cookie';
 
 const app = express();
 const port = 3000;
@@ -40,33 +41,46 @@ function doProxyTargeting(req) {
  * @returns {Object.<string, string>} The transferred headers.
  */
 function transferHeaders(source, proxyDomain, pretendDomain) {
-  let result = {};
-  if (source instanceof Headers) {
-    source.forEach((value, key) => (result[key] = value));
-  } else {
-    result = { ...source };
+  let result = new Headers();
+
+  function addTransferredHeader(name, value) {
+    switch (name) {
+      case 'host':
+      case 'origin':
+        result.set(name, pretendDomain);
+        break;
+      case 'content-security-policy':
+        result.set(
+          name,
+          "default-src 'self' data: 'unsafe-inline' 'unsafe-eval' https:; " +
+            "script-src 'self' data: 'unsafe-inline' 'unsafe-eval' https: blob:; " +
+            "style-src 'self' data: 'unsafe-inline' https:; " +
+            "img-src 'self' data: https: blob:; " +
+            "font-src 'self' data: https:; " +
+            "connect-src 'self' data: https: wss: blob:; " +
+            "media-src 'self' data: https: blob:; " +
+            "object-src 'self' https:; " +
+            "child-src 'self' https: data: blob:; " +
+            "form-action 'self' https:; " +
+            `report-uri http://${proxyDomain}/debug/csp`,
+        );
+        break;
+      case 'content-length':
+      case 'content-encoding':
+        break;
+      default:
+        result.set(name, value);
+        break;
+    }
   }
 
-  if (result.host) result.host = pretendDomain;
-  if (result.origin) result.origin = pretendDomain;
-  if (result['content-security-policy'])
-    result['content-security-policy'] =
-      "default-src 'self' data: 'unsafe-inline' 'unsafe-eval' https:; " +
-      "script-src 'self' data: 'unsafe-inline' 'unsafe-eval' https: blob:; " +
-      "style-src 'self' data: 'unsafe-inline' https:; " +
-      "img-src 'self' data: https: blob:; " +
-      "font-src 'self' data: https:; " +
-      "connect-src 'self' data: https: wss: blob:; " +
-      "media-src 'self' data: https: blob:; " +
-      "object-src 'self' https:; " +
-      "child-src 'self' https: data: blob:; " +
-      "form-action 'self' https:; " +
-      `report-uri http://${proxyDomain}/debug/csp`;
-
-  if (result['content-length']) delete result['content-length'];
-  if (result['content-encoding']) delete result['content-encoding'];
-  if (result['cookie']) delete result['cookie'];
-  if (result['set-cookie']) delete result['set-cookie'];
+  if (source instanceof Headers) {
+    for (const [name, value] of source) {
+      addTransferredHeader(name, value);
+    }
+  } else {
+    Object.entries(source).forEach((e) => addTransferredHeader(e.key, e.value));
+  }
 
   return result;
 }
@@ -156,7 +170,24 @@ app.all('/**', async (req, res, next) => {
     });
 
     res.status(response.status);
-    res.set(transferHeaders(response.headers, host, host));
+
+    // Add transferred headers and cookies to response.
+    for (const [name, value] of transferHeaders(response.headers, host, host)) {
+      if (name.toLowerCase() === 'set-cookie') {
+        const cookieName = value.slice(0, value.indexOf('='));
+        const parsedCookie = cookie.parse(value);
+        const cookieValue = parsedCookie[cookieName];
+        delete parsedCookie[cookieName];
+
+        if (parsedCookie.expires) {
+          parsedCookie.expires = new Date(parsedCookie.expires);
+        }
+
+        res.cookie(cookieName, cookieValue, parsedCookie);
+      } else {
+        res.set(name, value);
+      }
+    }
 
     const type = response.headers.get('content-type');
     if (!type) {
