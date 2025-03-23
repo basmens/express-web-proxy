@@ -94,25 +94,9 @@ app.use(cookieParser());
 /*
  * Content security endpoint for debugging
  */
-app.post('/debug/csp', async (req, res) => {
-  const bodyAsJson = await new Promise((resolve, _reject) => {
-    let result = '';
-    req.on('readable', () => {
-      let chunk;
-
-      while (null !== (chunk = req.read())) {
-        result = result + chunk;
-      }
-    });
-
-    req.on('end', () => {
-      resolve(result);
-    });
-  });
-
-  const body = JSON.parse(bodyAsJson);
-
-  console.log(`CSP violation while proxying ${req.cookies.proxyTarget}: ${JSON.stringify(body, undefined, '  ')}`);
+app.post('/debug/csp', express.json({ type: '*/csp-report' }));
+app.post('/debug/csp', (req, res) => {
+  console.log(`CSP violation while proxying ${req.cookies.proxyTarget}: ${JSON.stringify(req.body, undefined, 2)}`);
   res.status(200).send();
 });
 
