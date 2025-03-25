@@ -79,10 +79,11 @@ function transferHeaders(source, proxyDomain, pretendDomain) {
  * @returns The resulting string.
  */
 function injectProxyTarget(html, proxyDomain) {
-  const urlRegex = /(?:(https?):)(\/|\\u002f){2}([^"<\s?]*)([^"<\s]*)/gi;
+  const urlRegex = /(^|[^\\])(?:(https?):)?(\/|\\u002f){2}([^"<\s?]*)([^"<\s]*)/gi;
 
-  return html.replace(urlRegex, (_full, protocol, delimiter, path, query) => {
-    return `http:${delimiter.repeat(2)}${proxyDomain}${delimiter}${protocol ? protocol : 'http'}.${path}${query}`;
+  return html.replace(urlRegex, (_full, charBefore, protocol, delimiter, path, query) => {
+    const [firstProtocol, secondProtocol] = protocol ? ['http:', protocol] : ['', 'http'];
+    return `${charBefore}${firstProtocol}${delimiter.repeat(2)}${proxyDomain}${delimiter}${secondProtocol}.${path}${query}`;
   });
 }
 
