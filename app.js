@@ -33,24 +33,24 @@ function doProxyTargeting(req) {
 }
 
 /**
- * Transfers http headers from a list and extracts the relevant ones,
- * and potentially modifies them, to return them as a new object.
- * @param {Object.<string, string> | Headers} source The source map of headers.
- * @param {string} proxyDomain The domain of the proxy.
- * @param {string} pretendDomain The source domain the headers should pretend by.
- * @returns {Object.<string, string>} The transferred headers.
+ * Transforms the headers from browser requests so that they can be
+ * used to send to the proxy target.
+ *
+ * @param {*} req The request from the browser.
+ * @param {*} proxyTarget The proxy target
+ * @returns [Headers] A Headers instance containing the transferred headers.
  */
-function transferHeaders(source, proxyDomain, pretendDomain) {
-  let result = new Headers();
+function transformHeadersForRequest(req, proxyTarget) {
+  let resultHeaders = new Headers();
 
-  function addTransferredHeader(name, value) {
+  Object.entries(req.headers).forEach(([name, value]) => {
     switch (name) {
       case 'host':
       case 'origin':
-        result.set(name, pretendDomain);
+        resultHeaders.set(name, proxyTarget);
         break;
       case 'content-security-policy':
-        result.set(
+        resultHeaders.set(
           name,
           "default-src 'self' data: 'unsafe-inline' 'unsafe-eval' https:; " +
             "script-src 'self' data: 'unsafe-inline' 'unsafe-eval' https: blob:; " +
@@ -62,27 +62,84 @@ function transferHeaders(source, proxyDomain, pretendDomain) {
             "object-src 'self' https:; " +
             "child-src 'self' https: data: blob:; " +
             "form-action 'self' https:; " +
-            `report-uri http://${proxyDomain}/debug/csp`,
+            `report-uri http://${proxyTarget}/debug/csp`,
         );
         break;
       case 'content-length':
       case 'content-encoding':
         break;
       default:
-        result.set(name, value);
+        resultHeaders.set(name, value);
+        break;
+    }
+  });
+
+  Object.entries(req.cookies).forEach(([name, value]) => {
+    if (name !== 'proxyTarget') {
+      resultHeaders.append('Set-Cookie', `${name}=${value}`);
+    }
+  });
+
+  return resultHeaders;
+}
+
+/**
+ * transform headers that are received from the proxy target to so that they
+ * are usable to send to the browser.
+ *
+ * @param {*} proxyResponse The response from the proxy target
+ * @param {*} res The response to send to the browser
+ * @param {*} proxyTarget The proxy target
+ */
+function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
+  for (const [name, value] of proxyResponse.headers) {
+    switch (name) {
+      case 'host':
+      case 'origin':
+        res.set(name, proxyTarget);
+        break;
+      case 'set-cookie':
+        {
+          const cookieName = value.slice(0, value.indexOf('='));
+          const parsedCookie = cookie.parse(value);
+          const cookieValue = parsedCookie[cookieName];
+          delete parsedCookie[cookieName];
+
+          if (parsedCookie.expires) {
+            parsedCookie.expires = new Date(parsedCookie.expires);
+          }
+
+          if (parsedCookie.domain) {
+            parsedCookie.domain = proxyTarget.split(':')[0];
+          }
+
+          res.cookie(cookieName, cookieValue, parsedCookie);
+        }
+        break;
+      case 'content-security-policy':
+        res.set(
+          name,
+          "default-src 'self' data: 'unsafe-inline' 'unsafe-eval' https:; " +
+            "script-src 'self' data: 'unsafe-inline' 'unsafe-eval' https: blob:; " +
+            "style-src 'self' data: 'unsafe-inline' https:; " +
+            "img-src 'self' data: https: blob:; " +
+            "font-src 'self' data: https:; " +
+            "connect-src 'self' data: https: wss: blob:; " +
+            "media-src 'self' data: https: blob:; " +
+            "object-src 'self' https:; " +
+            "child-src 'self' https: data: blob:; " +
+            "form-action 'self' https:; " +
+            `report-uri http://${proxyTarget}/debug/csp`,
+        );
+        break;
+      case 'content-length':
+      case 'content-encoding':
+        break;
+      default:
+        res.set(name, value);
         break;
     }
   }
-
-  if (source instanceof Headers) {
-    for (const [name, value] of source) {
-      addTransferredHeader(name, value);
-    }
-  } else {
-    Object.entries(source).forEach((e) => addTransferredHeader(e.key, e.value));
-  }
-
-  return result;
 }
 
 /**
@@ -160,43 +217,32 @@ app.all('/**', (req, res, next) => {
  */
 app.all('/**', async (req, res, next) => {
   try {
-    const host = req.headers.host; // This includes the port
     const bodyStream = ['GET', 'HEAD', 'TRACE'].includes(req.method) ? undefined : Readable.toWeb(req);
-    const response = await fetch(req.proxyTarget + req.url, {
+    const proxyTargetResponse = await fetch(req.proxyTarget + req.url, {
       method: req.method,
-      headers: transferHeaders(req.headers, host, req.proxyTarget.split('://')[1]),
+      headers: transformHeadersForRequest(req, req.proxyTarget.split('://')[1]),
       body: bodyStream,
       duplex: 'half',
     });
 
-    res.status(response.status);
+    transformHeadersForResponse(proxyTargetResponse, res, req.headers.host);
 
-    // Add transferred headers and cookies to response.
-    for (const [name, value] of transferHeaders(response.headers, host, host)) {
-      if (name.toLowerCase() === 'set-cookie') {
-        const cookieName = value.slice(0, value.indexOf('='));
-        const parsedCookie = cookie.parse(value);
-        const cookieValue = parsedCookie[cookieName];
-        delete parsedCookie[cookieName];
+    res.status(proxyTargetResponse.status);
 
-        if (parsedCookie.expires) {
-          parsedCookie.expires = new Date(parsedCookie.expires);
-        }
-
-        res.cookie(cookieName, cookieValue, parsedCookie);
-      } else {
-        res.set(name, value);
-      }
-    }
-
-    const type = response.headers.get('content-type');
+    const type = proxyTargetResponse.headers.get('content-type');
     if (!type) {
       res.send();
       return;
     }
 
-    if (req.method === 'GET' && response.status >= 200 && response.status <= 299 && type.includes('html'))
+    if (
+      req.method === 'GET' &&
+      proxyTargetResponse.status >= 200 &&
+      proxyTargetResponse.status <= 299 &&
+      type.includes('html')
+    ) {
       res.cookie('proxyTarget', req.proxyTarget, { maxAge: 9000000000, httpOnly: false, secure: true });
+    }
 
     if (
       type.includes('html') ||
@@ -205,10 +251,10 @@ app.all('/**', async (req, res, next) => {
       type.includes('json') ||
       type.includes('text')
     ) {
-      res.send(injectProxyTarget(await response.text(), host));
+      res.send(injectProxyTarget(await proxyTargetResponse.text(), req.headers.host));
     } else {
-      res.setHeader('content-length', response.headers.get('content-length'));
-      Readable.fromWeb(response.body).pipe(res);
+      res.setHeader('content-length', proxyTargetResponse.headers.get('content-length'));
+      Readable.fromWeb(proxyTargetResponse.body).pipe(res);
     }
   } catch (err) {
     next(err);
