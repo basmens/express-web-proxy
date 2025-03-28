@@ -79,11 +79,31 @@ function transferHeaders(source, proxyDomain, pretendDomain) {
  * @returns The resulting string.
  */
 function injectProxyTarget(html, proxyDomain) {
-  const urlRegex = /(^|[^\\])(?:(https?):)?(\/|\\u002f){2}([^"<\s?]*)([^"<\s]*)/gi;
+  var urlRegex = new RegExp(
+    [
+      /(?<startChar>.?)/,
+      /(?<protocol>(?:https?:|))/,
+      /(?<delimiter>\/|\\u002f){2}/,
+      /(?<domain>[^\s.\\/:]+\.[^\s\\/:]+|localhost)/,
+      /(?<port>:[0-9]+|)/,
+      /(?<path>[^"'`<\s?:]*)/,
+      /(?<query>(?:\?[^"'`<\s:]*)?)/,
+    ]
+      .map((r) => r.source)
+      .join(''),
+  );
 
-  return html.replace(urlRegex, (_full, charBefore, protocol, delimiter, path, query) => {
-    const [firstProtocol, secondProtocol] = protocol ? ['http:', protocol] : ['', 'http'];
-    return `${charBefore}${firstProtocol}${delimiter.repeat(2)}${proxyDomain}${delimiter}${secondProtocol}.${path}${query}`;
+  return html.replace(urlRegex, (_full, startChar, protocol, delimiter, domain, port, path, query) => {
+    const replacement = [
+      `${startChar}${protocol}${delimiter.repeat(2)}${proxyDomain}`,
+      `${port}`,
+      `${delimiter}`,
+      `${(protocol && protocol.replace(':', '.')) || 'http.'}${domain}`,
+      `${path}`,
+      `${query}`,
+    ].join('');
+
+    return replacement;
   });
 }
 
