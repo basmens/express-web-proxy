@@ -4,41 +4,16 @@ import { Readable } from 'stream';
 
 const app = express();
 const port = 3000;
-const defaultBrowser = 'https://www.example.com';
+const fallBackDomain = 'https://www.example.com';
 
 let recentRequests = [];
 const rateLimitWindow = 3000; // Time window for the requests to count in ms
 const rateLimitCount = 2; // Max amount of allowed requests for that time window, inclusive
 
-/**
- * Takes the req and finds the list of possible proxy targets. The first element is the most likely target,
- * the second a fallback if the first one fails, the third if the second one fails etc. The list comes in
- * string number pairs, each time the proxy target and the index in the list in the cookie that is associated with
- * that index, so that if the proxy target turns out to be the one responsible for a successful result, then
- * all elements up until but not including the index can be removed from the list in the cookie. A -1 value
- * is not in the cookies list and should be ignored for that purpose. Further, because the url may need to
- * have bits cut out, the new url is returned too.
- * @param {Request} req The req.
- * @returns {[Array<{proxyTarget: string, cookieListIndex: number}>, string]} A list of proxy targets in most likely order together with their
- * index in the list in the cookie or -1 if not in the list. Finally, also the potentially modified url is returned.
- */
-function getProxyTargets(req) {
-  if (req.url.startsWith('/http')) {
-    const parts = req.url.substring(1).split('/');
-    const proxyTarget = parts.shift().replace('.', '://');
-    return [[{ proxyTarget: proxyTarget, cookieListIndex: -1 }], '/' + parts.join('/')];
-  }
-
-  if (req.cookies.proxyTargets.length > 0) {
-    const proxyTargets = [];
-    for (const [index, proxyTarget] of req.cookies.proxyTargets.entries()) {
-      if (proxyTargets.find((e) => e.proxyTarget === proxyTarget)) continue;
-      proxyTargets.push({ proxyTarget: proxyTarget, cookieListIndex: index });
-    }
-    return [proxyTargets, req.url];
-  }
-
-  return [[{ proxyTarget: defaultBrowser, cookieListIndex: -1 }], '/'];
+function getAbsoluteProxyTarget(url) {
+  const parts = url.substring(1).split('/');
+  const proxyTarget = parts.shift().replace('.', '://');
+  return { proxyTarget, modifiedUrl: '/' + parts.join('/') };
 }
 
 /**
@@ -104,11 +79,11 @@ function injectProxyTarget(html, proxyDomain) {
  * @param {string} path The path of the request
  * @returns {boolean} True if rate limit is exceeded, false otherwise.
  */
-function checkRateLimit(req, proxyTarget, path) {
+function checkRateLimit(ip, userAgent, proxyTarget, path) {
   const now = new Date().getTime();
   recentRequests.push({
-    ip: req.ip,
-    'user-agent': req.headers['user-agent'],
+    ip: ip,
+    'user-agent': userAgent,
     proxyTarget: proxyTarget,
     path: path,
     time: now,
@@ -118,15 +93,77 @@ function checkRateLimit(req, proxyTarget, path) {
 
   let count = 0;
   for (const r of recentRequests) {
-    if (
-      r.ip === req.ip &&
-      r['user-agent'] === req.headers['user-agent'] &&
-      r.proxyTarget === proxyTarget &&
-      r.path === path
-    )
-      count++;
+    if (r.ip === ip && r['user-agent'] === userAgent && r.proxyTarget === proxyTarget && r.path === path) count++;
   }
   return count > rateLimitCount;
+}
+
+async function sendClientRequest(req, bodyStream, proxyTarget, url) {
+  // Rate limit
+  const path = url.split('?', 2)[0];
+  if (checkRateLimit(req.ip, req['user-agent'], proxyTarget, path)) return new Response(null, { status: 429 });
+
+  // Send request
+  return fetch(proxyTarget + url, {
+    method: req.method,
+    headers: transferHeaders(req.headers, req.headers.host, proxyTarget.split('://')[1]),
+    body: bodyStream,
+    duplex: 'half',
+  });
+}
+
+async function proxyClientRequestOnCookies(req) {
+  let bodyStream = ['GET', 'HEAD', 'TRACE'].includes(req.method) ? undefined : Readable.toWeb(req);
+  const attemptedProxyTargets = new Set();
+  const proxyTargets = req.cookies.proxyTargets;
+
+  // Go through possible proxy targets until a successful response is found
+  let bestResponse, bestProxyTargetIndex;
+  for (const [index, proxyTarget] of proxyTargets.entries()) {
+    if (attemptedProxyTargets.has(proxyTarget)) continue;
+    attemptedProxyTargets.add(proxyTarget);
+
+    let bodyStreamTee;
+    if (bodyStream) [bodyStream, bodyStreamTee] = bodyStream.tee();
+    const response = await sendClientRequest(req, bodyStreamTee, proxyTarget, req.url);
+
+    if (!bestResponse) [bestResponse, bestProxyTargetIndex] = [response, index];
+    if (response.status < 400) {
+      [bestResponse, bestProxyTargetIndex] = [response, index];
+      break;
+    }
+  }
+
+  // Remove any wrong proxy targets from the cookies if applicable
+  if (bestProxyTargetIndex > 0 && bestResponse.ok) proxyTargets.splice(0, bestProxyTargetIndex);
+  return bestResponse;
+}
+
+async function proxyClientRequest(req) {
+  let proxyTarget;
+  let url;
+  if (req.url.startsWith('/http')) {
+    const proxyTargetUrlPair = getAbsoluteProxyTarget(req.url);
+    [proxyTarget, url] = [proxyTargetUrlPair.proxyTarget, proxyTargetUrlPair.modifiedUrl];
+  } else if (Array.isArray(req.cookies.proxyTargets) && req.cookies.proxyTargets.length > 0) {
+    return proxyClientRequestOnCookies(req);
+  } else {
+    [proxyTarget, url] = [fallBackDomain, '/'];
+  }
+
+  const bodyStream = ['GET', 'HEAD', 'TRACE'].includes(req.method) ? undefined : Readable.toWeb(req);
+  const response = await sendClientRequest(req, bodyStream, proxyTarget, url);
+
+  // Potentially add new proxyTarget to cookies
+  if (
+    response.ok &&
+    req.method === 'GET' &&
+    response.headers.get('content-type').includes('html') &&
+    (req.cookies.proxyTargets.length === 0 || req.cookies.proxyTargets[0] !== proxyTarget)
+  )
+    req.cookies.proxyTargets.unshift(proxyTarget);
+
+  return response;
 }
 
 /*
@@ -152,80 +189,23 @@ app.post('/debug/csp', (req, res) => {
  */
 app.all('/**', async (req, res, next) => {
   try {
-    const [proxyTargetsToAttempt, url] = getProxyTargets(req);
-    if (!proxyTargetsToAttempt || proxyTargetsToAttempt.length === 0) throw new Error('No proxy targets given');
+    let response = await proxyClientRequest(req);
+    if (!response) throw new Error('Proxying client request did not deliver a response');
 
-    const cookieProxyTargets = req.cookies.proxyTargets;
-    const path = url.split('?', 2)[0];
     const host = req.headers.host; // This includes the port
-    let bodyStream = ['GET', 'HEAD', 'TRACE'].includes(req.method) ? undefined : Readable.toWeb(req);
-
-    // Go through possible proxy targets until a successful response is found
-    let response;
-    let proxyTargetEntry;
-    for (proxyTargetEntry of proxyTargetsToAttempt) {
-      // Rate limit
-      const proxyTarget = proxyTargetEntry.proxyTarget;
-      if (checkRateLimit(req, proxyTarget, path)) {
-        res.status(429).send();
-        return;
-      }
-
-      // Send request
-      let streamTee;
-      if (bodyStream) [bodyStream, streamTee] = bodyStream.tee();
-
-      const newResponse = await fetch(proxyTarget + url, {
-        method: req.method,
-        headers: transferHeaders(req.headers, host, proxyTarget.split('://')[1]),
-        body: streamTee,
-        duplex: 'half',
-      });
-
-      if (!response) response = newResponse;
-      if (newResponse.status < 400) {
-        response = newResponse;
-        break;
-      }
-    }
-    const proxyTarget = proxyTargetEntry.proxyTarget;
-    const proxyTargetCookieIndex = proxyTargetEntry.cookieListIndex;
-
-    // Remove the proxy targets that were set incorrectly or previous one is used now
-    if (response.status >= 200 && response.status <= 299 && proxyTargetCookieIndex > 0) {
-      cookieProxyTargets.splice(0, proxyTargetCookieIndex);
-      res.cookie('proxyTargets', JSON.stringify(cookieProxyTargets), {
-        maxAge: 9000000000,
-        httpOnly: false,
-        secure: true,
-      });
-    }
-
     res.status(response.status);
     res.set(transferHeaders(response.headers, host, host));
+    res.cookie('proxyTargets', JSON.stringify(req.cookies.proxyTargets), {
+      maxAge: 9000000000,
+      httpOnly: false,
+      secure: true,
+    });
 
     // Handle requests without a type simply
     const type = response.headers.get('content-type');
     if (!type) {
       res.send();
       return;
-    }
-
-    // Add new proxy target to the list if applicable
-    if (
-      response.status >= 200 &&
-      response.status <= 299 &&
-      req.method === 'GET' &&
-      type.includes('html') &&
-      proxyTargetCookieIndex === -1 &&
-      (cookieProxyTargets.length === 0 || cookieProxyTargets[0] !== proxyTarget)
-    ) {
-      cookieProxyTargets.unshift(proxyTarget);
-      res.cookie('proxyTargets', JSON.stringify(cookieProxyTargets), {
-        maxAge: 9000000000,
-        httpOnly: false,
-        secure: true,
-      });
     }
 
     // Send body
