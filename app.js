@@ -10,6 +10,13 @@ let recentRequests = [];
 const rateLimitWindow = 3000; // Time window for the requests to count in ms
 const rateLimitCount = 2; // Max amount of allowed requests for that time window, inclusive
 
+/**
+ * Takes in a url that starts with an absolute proxy target in the path. That proxy
+ * target is extracted and cut out of the url. The proxy target and the modified url
+ * are then returned.
+ * @param {string} url The url to get the absolute proxy target from.
+ * @returns {{proxyTarget: string, modifiedUrl: string}} The proxy target together with the modified url.
+ */
 function getAbsoluteProxyTarget(url) {
   const parts = url.substring(1).split('/');
   const proxyTarget = parts.shift().replace('.', '://');
@@ -74,9 +81,10 @@ function injectProxyTarget(html, proxyDomain) {
 
 /**
  * Checks if a req on a given proxy target has exceeded the rate limit.
- * @param {express.Request} req The req to check for rate limiting.
+ * @param {string} ip The ip on which the request came in.
+ * @param {string} userAgent The user-agent of the request.
  * @param {string} proxyTarget The proxy target.
- * @param {string} path The path of the request
+ * @param {string} path The path of the url of the request.
  * @returns {boolean} True if rate limit is exceeded, false otherwise.
  */
 function checkRateLimit(ip, userAgent, proxyTarget, path) {
@@ -98,6 +106,16 @@ function checkRateLimit(ip, userAgent, proxyTarget, path) {
   return count > rateLimitCount;
 }
 
+/**
+ * First does a rate limit check. If the rate limit is exceeded, an empty response
+ * with a 429 'too many requests' status code is returned. If the rate limit is not
+ * exceeded, it sends a client request to the server on the given proxy target and url.
+ * @param {Express.Request} req The client request to proxy.
+ * @param {ReadableStream} bodyStream The body of the request in the form of a stream.
+ * @param {string} proxyTarget The proxy target.
+ * @param {string} url The url on which to send the request.
+ * @returns {Promise<Response>} A promise that resolves in the response from the server.
+ */
 async function sendClientRequest(req, bodyStream, proxyTarget, url) {
   // Rate limit
   const path = url.split('?', 2)[0];
@@ -112,6 +130,14 @@ async function sendClientRequest(req, bodyStream, proxyTarget, url) {
   });
 }
 
+/**
+ * Goes through the list of proxy targets in the cookies and tries them until a
+ * successful response has been received. Any that came before that successful
+ * response are removed from the cookies. If no successful response was received,
+ * the first one is returned instead.
+ * @param {Express.Request} req The request to proxy.
+ * @returns {Promise<Response | undefined>} The successful server response or the first one.
+ */
 async function proxyClientRequestOnCookies(req) {
   let bodyStream = ['GET', 'HEAD', 'TRACE'].includes(req.method) ? undefined : Readable.toWeb(req);
   const attemptedProxyTargets = new Set();
@@ -139,6 +165,12 @@ async function proxyClientRequestOnCookies(req) {
   return bestResponse;
 }
 
+/**
+ * Takes the client request and proxies it to the server. The server response
+ * is then returned. If applicable, the proxy target cookies are modified in req.
+ * @param {Express.Request} req The request to proxy.
+ * @returns {Promise<Response | undefined>} The server response.
+ */
 async function proxyClientRequest(req) {
   let proxyTarget;
   let url;
