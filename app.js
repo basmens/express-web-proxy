@@ -19,28 +19,26 @@ const rateLimitCount = 2; // Max amount of allowed requests for that time window
  * is not in the cookies list and should be ignored for that purpose. Further, because the url may need to
  * have bits cut out, the new url is returned too.
  * @param {Request} req The req.
- * @returns {[Array<[string, number]>, string]} A list of proxy targets in most likely order together with their
+ * @returns {[Array<{proxyTarget: string, cookieListIndex: number}>, string]} A list of proxy targets in most likely order together with their
  * index in the list in the cookie or -1 if not in the list. Finally, also the potentially modified url is returned.
  */
 function getProxyTargets(req) {
   if (req.url.startsWith('/http')) {
     const parts = req.url.substring(1).split('/');
     const proxyTarget = parts.shift().replace('.', '://');
-    return [[[proxyTarget, -1]], '/' + parts.join('/')];
+    return [[{ proxyTarget: proxyTarget, cookieListIndex: -1 }], '/' + parts.join('/')];
   }
 
   if (req.cookies.proxyTargets.length > 0) {
     const proxyTargets = [];
-    const includedProxyTargets = new Set();
     for (const [index, proxyTarget] of req.cookies.proxyTargets.entries()) {
-      if (includedProxyTargets.has(proxyTarget)) continue;
-      includedProxyTargets.add(proxyTarget);
-      proxyTargets.push([proxyTarget, index]);
+      if (proxyTargets.find((e) => e.proxyTarget === proxyTarget)) continue;
+      proxyTargets.push({ proxyTarget: proxyTarget, cookieListIndex: index });
     }
     return [proxyTargets, req.url];
   }
 
-  return [[[defaultBrowser, -1]], '/'];
+  return [[{ proxyTarget: defaultBrowser, cookieListIndex: -1 }], '/'];
 }
 
 /**
@@ -155,6 +153,8 @@ app.post('/debug/csp', (req, res) => {
 app.all('/**', async (req, res, next) => {
   try {
     const [proxyTargetsToAttempt, url] = getProxyTargets(req);
+    if (!proxyTargetsToAttempt || proxyTargetsToAttempt.length === 0) throw new Error('No proxy targets given');
+
     const cookieProxyTargets = req.cookies.proxyTargets;
     const path = url.split('?', 2)[0];
     const host = req.headers.host; // This includes the port
@@ -162,10 +162,10 @@ app.all('/**', async (req, res, next) => {
 
     // Go through possible proxy targets until a successful response is found
     let response;
-    let proxyTarget;
-    let proxyTargetCookieIndex;
-    for ([proxyTarget, proxyTargetCookieIndex] of proxyTargetsToAttempt) {
+    let proxyTargetEntry;
+    for (proxyTargetEntry of proxyTargetsToAttempt) {
       // Rate limit
+      const proxyTarget = proxyTargetEntry.proxyTarget;
       if (checkRateLimit(req, proxyTarget, path)) {
         res.status(429).send();
         return;
@@ -181,12 +181,15 @@ app.all('/**', async (req, res, next) => {
         body: streamTee,
         duplex: 'half',
       });
-      if (!response || newResponse.status < 400) {
+
+      if (!response) response = newResponse;
+      if (newResponse.status < 400) {
         response = newResponse;
-        if (response.status < 400) break;
+        break;
       }
     }
-    if (!response) throw new Error('No response from the proxied request');
+    const proxyTarget = proxyTargetEntry.proxyTarget;
+    const proxyTargetCookieIndex = proxyTargetEntry.cookieListIndex;
 
     // Remove the proxy targets that were set incorrectly or previous one is used now
     if (response.status >= 200 && response.status <= 299 && proxyTargetCookieIndex > 0) {
