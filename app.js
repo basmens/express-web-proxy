@@ -4,31 +4,23 @@ import { Readable } from 'stream';
 
 const app = express();
 const port = 3000;
-const defaultBrowser = 'https://www.example.com';
+const fallBackDomain = 'https://www.example.com';
 
 let recentRequests = [];
 const rateLimitWindow = 3000; // Time window for the requests to count in ms
 const rateLimitCount = 2; // Max amount of allowed requests for that time window, inclusive
 
 /**
- * Takes the req and finds the proxy target. It modifies the req to set the url to the url without
- * any proxy targeting included. The req gains a proxyTarget attribute.
- * @param {Request} req The req.
+ * Takes in a url that starts with an absolute proxy target in the path. That proxy
+ * target is extracted and cut out of the url. The proxy target and the modified url
+ * are then returned.
+ * @param {string} url The url to get the absolute proxy target from.
+ * @returns {{proxyTarget: string, modifiedUrl: string}} The proxy target together with the modified url.
  */
-function doProxyTargeting(req) {
-  if (req.url.startsWith('/http')) {
-    const parts = req.url.substring(1).split('/');
-    req.proxyTarget = parts.shift().replace('.', '://');
-    req.url = '/' + parts.join('/');
-    return;
-  }
-
-  if (req.cookies.proxyTarget) {
-    req.proxyTarget = req.cookies.proxyTarget;
-    return;
-  }
-
-  req.proxyTarget = defaultBrowser;
+function getAbsoluteProxyTarget(url) {
+  const parts = url.substring(1).split('/');
+  const proxyTarget = parts.shift().replace('.', '://');
+  return { proxyTarget, modifiedUrl: '/' + parts.join('/') };
 }
 
 /**
@@ -76,7 +68,7 @@ function transferHeaders(source, proxyDomain, pretendDomain) {
  * with http://proxyDomain/http(s).path?query.
  * @param {string} html The html string.
  * @param {string} rawProxyTarget The raw proxy target.
- * @returns The resulting string.
+ * @returns {string} The resulting string.
  */
 function injectProxyTarget(html, proxyDomain) {
   const urlRegex = /(^|[^\\])(?:(https?):)?(\/|\\u002f){2}([^"<\s?]*)([^"<\s]*)/gi;
@@ -87,10 +79,132 @@ function injectProxyTarget(html, proxyDomain) {
   });
 }
 
+/**
+ * Checks if a req on a given proxy target has exceeded the rate limit.
+ * @param {string} ip The ip on which the request came in.
+ * @param {string} userAgent The user-agent of the request.
+ * @param {string} proxyTarget The proxy target.
+ * @param {string} path The path of the url of the request.
+ * @returns {boolean} True if rate limit is exceeded, false otherwise.
+ */
+function checkRateLimit(ip, userAgent, proxyTarget, path) {
+  const now = new Date().getTime();
+  recentRequests.push({
+    ip: ip,
+    'user-agent': userAgent,
+    proxyTarget: proxyTarget,
+    path: path,
+    time: now,
+  });
+
+  while (recentRequests.length > 0 && now - recentRequests[0].time > rateLimitWindow) recentRequests.shift();
+
+  let count = 0;
+  for (const r of recentRequests) {
+    if (r.ip === ip && r['user-agent'] === userAgent && r.proxyTarget === proxyTarget && r.path === path) count++;
+  }
+  return count > rateLimitCount;
+}
+
+/**
+ * First does a rate limit check. If the rate limit is exceeded, an empty response
+ * with a 429 'too many requests' status code is returned. If the rate limit is not
+ * exceeded, it sends the browser request to the given proxy target on the given url.
+ * @param {Express.Request} req The browser request to proxy.
+ * @param {ReadableStream} bodyStream The body of the request in the form of a stream.
+ * @param {string} proxyTarget The proxy target.
+ * @param {string} url The url on which to send the request.
+ * @returns {Promise<Response>} A promise that resolves in the response from the proxy target.
+ */
+async function sendBrowserRequest(req, bodyStream, proxyTarget, url) {
+  // Rate limit
+  const path = url.split('?', 2)[0];
+  if (checkRateLimit(req.ip, req['user-agent'], proxyTarget, path)) return new Response(null, { status: 429 });
+
+  // Send request
+  return fetch(proxyTarget + url, {
+    method: req.method,
+    headers: transferHeaders(req.headers, req.headers.host, proxyTarget.split('://')[1]),
+    body: bodyStream,
+    duplex: 'half',
+  });
+}
+
+/**
+ * Goes through the list of proxy targets in the cookies and tries them until a
+ * successful response has been received. Any that came before that successful
+ * response are removed from the cookies. If no successful response was received,
+ * the first one is returned.
+ * @param {Express.Request} req The request to proxy.
+ * @returns {Promise<Response | undefined>} The successful proxy target response or the first one.
+ */
+async function proxyBrowserRequestOnCookies(req) {
+  let bodyStream = ['GET', 'HEAD', 'TRACE'].includes(req.method) ? undefined : Readable.toWeb(req);
+  const attemptedProxyTargets = new Set();
+
+  // Go through possible proxy targets until a successful response is found
+  let bestResponse, bestProxyTargetIndex;
+  for (const [index, proxyTarget] of req.cookies.proxyTargets.entries()) {
+    if (attemptedProxyTargets.has(proxyTarget)) continue;
+    attemptedProxyTargets.add(proxyTarget);
+
+    let bodyStreamTee;
+    if (bodyStream) [bodyStream, bodyStreamTee] = bodyStream.tee();
+    const response = await sendBrowserRequest(req, bodyStreamTee, proxyTarget, req.url);
+
+    if (!bestResponse) [bestResponse, bestProxyTargetIndex] = [response, index];
+    if (response.status < 400) {
+      [bestResponse, bestProxyTargetIndex] = [response, index];
+      break;
+    }
+  }
+
+  // Remove any wrong proxy targets from the cookies if applicable
+  if (bestProxyTargetIndex > 0 && bestResponse.ok) req.cookies.proxyTargets.splice(0, bestProxyTargetIndex);
+  return bestResponse;
+}
+
+/**
+ * Takes the browser request and proxies it to the proxy target. The proxy target response
+ * is then returned. If applicable, the proxy target cookies are modified in req.
+ * @param {Express.Request} req The request to proxy.
+ * @returns {Promise<Response | undefined>} The proxy target response.
+ */
+async function proxyBrowserRequest(req) {
+  let proxyTarget;
+  let url;
+  if (req.url.startsWith('/http')) {
+    const proxyTargetUrlPair = getAbsoluteProxyTarget(req.url);
+    [proxyTarget, url] = [proxyTargetUrlPair.proxyTarget, proxyTargetUrlPair.modifiedUrl];
+  } else if (Array.isArray(req.cookies.proxyTargets) && req.cookies.proxyTargets.length > 0) {
+    return proxyBrowserRequestOnCookies(req);
+  } else {
+    [proxyTarget, url] = [fallBackDomain, '/'];
+  }
+
+  const bodyStream = ['GET', 'HEAD', 'TRACE'].includes(req.method) ? undefined : Readable.toWeb(req);
+  const response = await sendBrowserRequest(req, bodyStream, proxyTarget, url);
+
+  // Potentially add new proxyTarget to cookies
+  if (
+    response.ok &&
+    req.method === 'GET' &&
+    response.headers.get('content-type').includes('html') &&
+    (req.cookies.proxyTargets.length === 0 || req.cookies.proxyTargets[0] !== proxyTarget)
+  )
+    req.cookies.proxyTargets.unshift(proxyTarget);
+
+  return response;
+}
+
 /*
- * Parse cookies and body
+ * Parse cookies and proxy targets
  */
 app.use(cookieParser());
+app.use((req, _res, next) => {
+  req.cookies.proxyTargets = JSON.parse(req.cookies.proxyTargets || '[]');
+  next();
+});
 
 /*
  * Content security endpoint for debugging
@@ -102,73 +216,30 @@ app.post('/debug/csp', (req, res) => {
 });
 
 /*
- * Infer proxy target
- */
-app.use((req, res, next) => {
-  if (!req.proxyTarget) doProxyTargeting(req);
-  if (req.proxyTarget.includes(req.host)) doProxyTargeting(req); // Try again
-  next();
-});
-
-/*
- * Do rate limiting
- */
-app.all('/**', (req, res, next) => {
-  const now = new Date().getTime();
-  recentRequests.push({
-    ip: req.ip,
-    'user-agent': req.headers['user-agent'],
-    proxyTarget: req.proxyTarget,
-    path: req.path,
-    time: now,
-  });
-
-  while (recentRequests.length > 0 && now - recentRequests[0].time > rateLimitWindow) recentRequests.shift();
-
-  let count = 0;
-  for (const r of recentRequests) {
-    if (
-      r.ip === req.ip &&
-      r['user-agent'] === req.headers['user-agent'] &&
-      r.proxyTarget === req.proxyTarget &&
-      r.path === req.path
-    )
-      count++;
-  }
-
-  if (count > rateLimitCount) {
-    res.status(429).send();
-    return;
-  }
-  next();
-});
-
-/*
  * Proxy requests
  */
 app.all('/**', async (req, res, next) => {
   try {
-    const host = req.headers.host; // This includes the port
-    const bodyStream = ['GET', 'HEAD', 'TRACE'].includes(req.method) ? undefined : Readable.toWeb(req);
-    const response = await fetch(req.proxyTarget + req.url, {
-      method: req.method,
-      headers: transferHeaders(req.headers, host, req.proxyTarget.split('://')[1]),
-      body: bodyStream,
-      duplex: 'half',
-    });
+    let response = await proxyBrowserRequest(req);
+    if (!response) throw new Error('Proxying client request did not deliver a response');
 
+    const host = req.headers.host; // This includes the port
     res.status(response.status);
     res.set(transferHeaders(response.headers, host, host));
+    res.cookie('proxyTargets', JSON.stringify(req.cookies.proxyTargets), {
+      maxAge: 9000000000,
+      httpOnly: false,
+      secure: true,
+    });
 
+    // Handle requests without a type simply
     const type = response.headers.get('content-type');
     if (!type) {
       res.send();
       return;
     }
 
-    if (req.method === 'GET' && response.status >= 200 && response.status <= 299 && type.includes('html'))
-      res.cookie('proxyTarget', req.proxyTarget, { maxAge: 9000000000, httpOnly: false, secure: true });
-
+    // Send body
     if (
       type.includes('html') ||
       type.includes('css') ||
@@ -195,8 +266,8 @@ app.use((err, req, res, _next) => {
 });
 
 /*
- * Start server
+ * Start proxy
  */
 app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
+  console.log(`Proxy listening on port ${port}`);
 });
