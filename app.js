@@ -28,9 +28,9 @@ function getAbsoluteProxyTarget(url) {
  * Transforms the headers from browser requests so that they can be
  * used to send to the proxy target.
  *
- * @param {*} req The request from the browser.
- * @param {*} proxyTarget The proxy target
- * @returns [Headers] A Headers instance containing the transferred headers.
+ * @param {Express.Request} req The request from the browser.
+ * @param {string} proxyTarget The proxy target
+ * @returns {Headers} A Headers instance containing the transferred headers.
  */
 function transformHeadersForRequest(req, proxyTarget) {
   let resultHeaders = new Headers();
@@ -40,22 +40,6 @@ function transformHeadersForRequest(req, proxyTarget) {
       case 'host':
       case 'origin':
         resultHeaders.set(name, proxyTarget);
-        break;
-      case 'content-security-policy':
-        resultHeaders.set(
-          name,
-          "default-src 'self' data: 'unsafe-inline' 'unsafe-eval' https:; " +
-            "script-src 'self' data: 'unsafe-inline' 'unsafe-eval' https: blob:; " +
-            "style-src 'self' data: 'unsafe-inline' https:; " +
-            "img-src 'self' data: https: blob:; " +
-            "font-src 'self' data: https:; " +
-            "connect-src 'self' data: https: wss: blob:; " +
-            "media-src 'self' data: https: blob:; " +
-            "object-src 'self' https:; " +
-            "child-src 'self' https: data: blob:; " +
-            "form-action 'self' https:; " +
-            `report-uri http://${proxyTarget}/debug/csp`,
-        );
         break;
       case 'content-length':
       case 'content-encoding':
@@ -76,36 +60,61 @@ function transformHeadersForRequest(req, proxyTarget) {
 }
 
 /**
+ * Translates a cookie header to a format that can be used as a cookie for Express
+ *
+ * @param {string} cookieHeaderValue A cookie value from a 'set-cookie' header
+ * @returns {{cookieName: string, cookieValue: string, cookieOptions: Object}} values that can be passed to Express.Response.cookie
+ */
+function translateCookieForExpress(cookieHeaderValue) {
+  const cookieName = cookieHeaderValue.slice(0, cookieHeaderValue.indexOf('='));
+  const parsedCookie = cookie.parse(cookieHeaderValue);
+
+  // Extract the cookie value from the parsedCookie
+  const cookieValue = parsedCookie[cookieName];
+  delete parsedCookie[cookieName];
+
+  // For Express 'expires' needs to be a Date instead of a string.
+  if (parsedCookie.Expires) {
+    parsedCookie.expires = new Date(parsedCookie.Expires);
+    delete parsedCookie.Expires;
+  }
+
+  if (parsedCookie.expires) {
+    parsedCookie.expires = new Date(parsedCookie.expires);
+  }
+
+  return {
+    cookieName: cookieName,
+    cookieValue: cookieValue,
+    cookieOptions: parsedCookie,
+  };
+}
+
+/**
  * transform headers that are received from the proxy target to so that they
  * are usable to send to the browser.
  *
- * @param {*} proxyResponse The response from the proxy target
- * @param {*} res The response to send to the browser
- * @param {*} proxyTarget The proxy target
+ * @param {Response} proxyResponse The response from the proxy target
+ * @param {Express.Response} res The response to send to the browser
+ * @param {string} proxyTarget The proxy target
  */
 function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
   for (const [name, value] of proxyResponse.headers) {
     switch (name) {
-      case 'host':
-      case 'origin':
-        res.set(name, proxyTarget);
-        break;
       case 'set-cookie':
         {
-          const cookieName = value.slice(0, value.indexOf('='));
-          const parsedCookie = cookie.parse(value);
-          const cookieValue = parsedCookie[cookieName];
-          delete parsedCookie[cookieName];
+          const { cookieName, cookieValue, cookieOptions } = translateCookieForExpress(value);
 
-          if (parsedCookie.expires) {
-            parsedCookie.expires = new Date(parsedCookie.expires);
+          if (cookieOptions.Domain) {
+            cookieOptions.domain = proxyTarget.split(':')[0];
+            delete cookieOptions.Domain;
           }
 
-          if (parsedCookie.domain) {
-            parsedCookie.domain = proxyTarget.split(':')[0];
+          if (cookieOptions.domain) {
+            cookieOptions.domain = proxyTarget.split(':')[0];
           }
 
-          res.cookie(cookieName, cookieValue, parsedCookie);
+          res.cookie(cookieName, cookieValue, cookieOptions);
         }
         break;
       case 'content-security-policy':
@@ -141,17 +150,17 @@ function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
  * Tries to inject the proxy target into the given html. It replaces http(s)://path?query
  * with http://proxyDomain/http(s).path?query.
  * @param {string} html The html string.
- * @param {string} rawProxyTarget The raw proxy target.
+ * @param {string} proxyDomain The raw proxy target.
  * @returns {string} The resulting string.
  */
 function injectProxyTarget(html, proxyDomain) {
   var urlRegex = new RegExp(
     [
-      /(?<startChars>[~\S]*?)/,
-      /(?<protocol>(?:https?:|))/,
+      /(?<startChars>\S*?)/,
+      /(?<protocol>https?:|)/,
       /(?<delimiter>\/|\\u002f){2}/,
       /(?<domain>(?:[^\s"'`<.\\/:]+\.[^"'`<\s\\/:])+|localhost)/,
-      /(?<port>:[0-9]+|)/,
+      /(?<targetPort>:[0-9]+|)/,
       /(?<path>[^"'`<\s?:]*)/,
       /(?<query>(?:\?[^"'`<\s:]*)?)/,
     ]
@@ -160,16 +169,16 @@ function injectProxyTarget(html, proxyDomain) {
     'gi',
   );
 
-  let result = html.replace(urlRegex, (full, startChars, protocol, delimiter, domain, port, path, query) => {
+  let result = html.replace(urlRegex, (full, startChars, protocol, delimiter, domain, targetPort, path, query) => {
     if (startChars.endsWith('\\')) return full;
     if (startChars.includes('xmlns')) return full;
 
     const startProtocol = protocol === 'https:' ? 'http:' : protocol;
     const replacement = [
       `${startChars}${startProtocol}${delimiter.repeat(2)}${proxyDomain}`,
-      `${port}`,
+      `${targetPort}`,
       `${delimiter}`,
-      `${(protocol && protocol.replace(':', '.')) || 'http.'}${domain}`,
+      `${protocol ? protocol.replace(':', '.') : 'http.'}${domain}`,
       `${path}`,
       `${query}`,
     ].join('');
