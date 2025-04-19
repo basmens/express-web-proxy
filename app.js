@@ -77,9 +77,7 @@ function translateCookieForExpress(cookieHeaderValue) {
   if (parsedCookie.Expires) {
     parsedCookie.expires = new Date(parsedCookie.Expires);
     delete parsedCookie.Expires;
-  }
-
-  if (parsedCookie.expires) {
+  } else if (parsedCookie.expires) {
     parsedCookie.expires = new Date(parsedCookie.expires);
   }
 
@@ -108,9 +106,7 @@ function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
           if (cookieOptions.Domain) {
             cookieOptions.domain = proxyTarget.split(':')[0];
             delete cookieOptions.Domain;
-          }
-
-          if (cookieOptions.domain) {
+          } else if (cookieOptions.domain) {
             cookieOptions.domain = proxyTarget.split(':')[0];
           }
 
@@ -159,7 +155,7 @@ function injectProxyTarget(html, proxyDomain) {
       /(?<startChars>\S*?)/,
       /(?<protocol>https?:|)/,
       /(?<delimiter>\/|\\u002f){2}/,
-      /(?<domain>(?:[^\s"'`<.\\/:]+\.[^"'`<\s\\/:])+|localhost)/,
+      /(?<domain>(?:[^\s"'`<.\\/:]+\.[^"'`<\s\\/:]+)|localhost)/,
       /(?<targetPort>:[0-9]+|)/,
       /(?<path>[^"'`<\s?:]*)/,
       /(?<query>(?:\?[^"'`<\s:]*)?)/,
@@ -173,12 +169,10 @@ function injectProxyTarget(html, proxyDomain) {
     if (startChars.endsWith('\\')) return full;
     if (startChars.includes('xmlns')) return full;
 
-    const startProtocol = protocol === 'https:' ? 'http:' : protocol;
     const replacement = [
-      `${startChars}${startProtocol}${delimiter.repeat(2)}${proxyDomain}`,
-      `${targetPort}`,
+      `${startChars}http:${delimiter.repeat(2)}${proxyDomain}`,
       `${delimiter}`,
-      `${protocol ? protocol.replace(':', '.') : 'http.'}${domain}`,
+      `${protocol ? protocol.replace(':', '.') : 'http.'}${domain}${targetPort}`,
       `${path}`,
       `${query}`,
     ].join('');
