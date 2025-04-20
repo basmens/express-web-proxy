@@ -1,7 +1,6 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import { Readable } from 'stream';
-import cookie from 'cookie';
 
 const app = express();
 const port = 3000;
@@ -25,6 +24,47 @@ function getAbsoluteProxyTarget(url) {
 }
 
 /**
+ * Parses a cookie string according to the cookie specifications found here:
+ * https://datatracker.ietf.org/doc/html/rfc6265, section 5.2
+ *
+ * The cookie, when valid, is returned as an object with the attributes name, value, options.
+ * Options itself is another object containing the options that came with the cookies.
+ * All option keys are lower cased except 'httpOnly', 'maxAge' and 'sameSite'.
+ * If the cookie string is syntactically invalid, undefined is retuned.
+ *
+ * @param {string} cookie The cookie string to parse.
+ * @returns {{name: string, value: string, options: Object}|undefined} The parsed cookie.
+ */
+function parseCookie(cookie) {
+  const nameValueRegex = /\s*(?<name>[^\s;=][^;=]*)=(?<value>[^;]*)/;
+  const cookieAttrRegex = /;(?<attrName>[^;=]*)(?:=(?<attrValue>[^;]+))?/g;
+  const cookieRegex = new RegExp(`^${nameValueRegex.source}(?:${cookieAttrRegex.source})*$`, '');
+
+  const nameValue = cookie.match(cookieRegex);
+  if (!nameValue) return undefined;
+
+  const options = Object.fromEntries(
+    cookie.matchAll(cookieAttrRegex).map((attrMatch) => {
+      // cSpell: disable
+      const attrName = attrMatch[1]
+        .trim()
+        .toLowerCase()
+        .replace('samesite', 'sameSite')
+        .replace('httponly', 'httpOnly');
+      // cSpell: enable
+      if (!attrMatch[2]) return [attrName, true];
+
+      const attrValue = attrMatch[2].trim();
+      // cspell: disable-next-line
+      if (attrName === 'maxage') return ['maxAge', Number.parseInt(attrValue)];
+      if (attrName === 'expires') return ['expires', new Date(attrValue)];
+      return [attrName, attrValue];
+    }),
+  );
+  return { name: nameValue[1].trim(), value: nameValue[2].trim(), options };
+}
+
+/**
  * Transforms the headers from browser requests so that they can be
  * used to send to the proxy target.
  *
@@ -36,6 +76,7 @@ function transformHeadersForRequest(req, proxyTarget) {
   let resultHeaders = new Headers();
 
   Object.entries(req.headers).forEach(([name, value]) => {
+    // Headers lower-cased by express
     switch (name) {
       case 'host':
       case 'origin':
@@ -60,35 +101,6 @@ function transformHeadersForRequest(req, proxyTarget) {
 }
 
 /**
- * Translates a cookie header to a format that can be used as a cookie for Express
- *
- * @param {string} cookieHeaderValue A cookie value from a 'set-cookie' header
- * @returns {{cookieName: string, cookieValue: string, cookieOptions: Object}} values that can be passed to Express.Response.cookie
- */
-function translateCookieForExpress(cookieHeaderValue) {
-  const cookieName = cookieHeaderValue.slice(0, cookieHeaderValue.indexOf('='));
-  const parsedCookie = cookie.parse(cookieHeaderValue);
-
-  // Extract the cookie value from the parsedCookie
-  const cookieValue = parsedCookie[cookieName];
-  delete parsedCookie[cookieName];
-
-  // For Express 'expires' needs to be a Date instead of a string.
-  if (parsedCookie.Expires) {
-    parsedCookie.expires = new Date(parsedCookie.Expires);
-    delete parsedCookie.Expires;
-  } else if (parsedCookie.expires) {
-    parsedCookie.expires = new Date(parsedCookie.expires);
-  }
-
-  return {
-    cookieName: cookieName,
-    cookieValue: cookieValue,
-    cookieOptions: parsedCookie,
-  };
-}
-
-/**
  * transform headers that are received from the proxy target to so that they
  * are usable to send to the browser.
  *
@@ -98,22 +110,20 @@ function translateCookieForExpress(cookieHeaderValue) {
  */
 function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
   for (const [name, value] of proxyResponse.headers) {
+    // Headers lower-cased by mdn reference
     switch (name) {
-      case 'set-cookie':
-        {
-          const { cookieName, cookieValue, cookieOptions } = translateCookieForExpress(value);
+      case 'set-cookie': {
+        const parsedCookie = parseCookie(value);
+        if (!parsedCookie) break;
 
-          if (cookieOptions.Domain) {
-            cookieOptions.domain = proxyTarget.split(':')[0];
-            delete cookieOptions.Domain;
-          } else if (cookieOptions.domain) {
-            cookieOptions.domain = proxyTarget.split(':')[0];
-          }
-
-          res.cookie(cookieName, cookieValue, cookieOptions);
+        if (parsedCookie.options.domain) {
+          parsedCookie.options.domain = proxyTarget.split(':')[0];
         }
+        res.cookie(parsedCookie.name, parsedCookie.value, parsedCookie.options);
         break;
+      }
       case 'content-security-policy':
+      case 'content-security-policy-report-only':
         res.set(
           name,
           "default-src 'self' data: 'unsafe-inline' 'unsafe-eval' https:; " +
@@ -333,8 +343,7 @@ app.all('/**', async (req, res, next) => {
     res.status(response.status);
     res.set(transformHeadersForResponse(response, res, host));
     res.cookie('proxyTargets', JSON.stringify(req.cookies.proxyTargets), {
-      maxAge: 9000000000,
-      httpOnly: false,
+      httpOnly: true,
       secure: false,
     });
 
