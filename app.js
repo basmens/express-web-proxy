@@ -76,6 +76,7 @@ function transformHeadersForRequest(req, proxyTarget) {
   let resultHeaders = new Headers();
 
   Object.entries(req.headers).forEach(([name, value]) => {
+    // Headers lower-cased by express
     switch (name) {
       case 'host':
       case 'origin':
@@ -109,6 +110,7 @@ function transformHeadersForRequest(req, proxyTarget) {
  */
 function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
   for (const [name, value] of proxyResponse.headers) {
+    // Headers lower-cased by mdn reference
     switch (name) {
       case 'set-cookie': {
         const parsedCookie = parseCookie(value);
