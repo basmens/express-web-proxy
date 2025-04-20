@@ -36,7 +36,7 @@ function getAbsoluteProxyTarget(url) {
  * @returns {{name: string, value: string, options: Object}|undefined} The parsed cookie.
  */
 function parseCookie(cookie) {
-  const nameValueRegex = /(?<name>[^;=]+)=(?<value>[^;]*)/;
+  const nameValueRegex = /\s*(?<name>[^\s;=][^;=]*)=(?<value>[^;]*)/;
   const cookieAttrRegex = /;(?<attrName>[^;=]*)(?:=(?<attrValue>[^;]+))?/g;
   const cookieRegex = new RegExp(`^${nameValueRegex.source}(?:${cookieAttrRegex.source})*$`, '');
 
