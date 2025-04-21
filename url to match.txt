@@ -1,14 +1,3 @@
-regex:
-/(?<!\\|xmlns\s*=\s*\S{0,6})
-(?<protocol>https?:)?
-(?<delimiter>\/|\\\/|\\u002f)\k<delimiter>
-(?<userInfo>[\w~.\-!$&'()*+,;=%:]*@)?
-(?<host>\[[\w~.\-!$&'()*+,;=:]{2,}\]|[\w~.\-!$&'()*+,;=%]+)
-(?<port>:\d*)?
-(?<path>(?:\k<delimiter>[\w~.\-!$&'()*+,;=%:@]*)*)
-(?<query>\?[\w~.\-!$&'()*+,;=%:@/?]*)?
-(?<fragment>#[\w~.\-!$&'()*+,;=%:@/?]*)?/gi
-
 URL's to match:
 From https://en.wikipedia.org/wiki/Uniform_Resource_Identifier#Syntax (Those that require an authority)
         userInfo       host      port
