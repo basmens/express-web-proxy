@@ -1,9 +1,14 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import { Readable } from 'stream';
+import https from 'https';
+import http from 'http';
+import path from 'path';
+import fs from 'fs';
 
 const app = express();
-const port = 3000;
+const httpPort = 3000;
+const httpsPort = 3001;
 const fallBackDomain = 'https://www.example.com';
 
 let recentRequests = [];
@@ -159,7 +164,7 @@ function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
  * @param {string} proxyDomain The raw proxy target.
  * @returns {string} The resulting string.
  */
-function injectProxyTarget(html, proxyDomain) {
+function injectProxyTarget(html, proxyProtocol, proxyDomain) {
   var urlRegex = new RegExp(
     [
       /(?<startChars>\S*?)/,
@@ -180,7 +185,7 @@ function injectProxyTarget(html, proxyDomain) {
     if (startChars.includes('xmlns')) return full;
 
     const replacement = [
-      `${startChars}http:${delimiter.repeat(2)}${proxyDomain}`,
+      `${startChars}${proxyProtocol}:${delimiter.repeat(2)}${proxyDomain}`,
       `${delimiter}`,
       `${protocol ? protocol.replace(':', '.') : 'http.'}${domain}${targetPort}`,
       `${path}`,
@@ -364,7 +369,7 @@ app.all('/**', async (req, res, next) => {
       type.includes('text') ||
       type.includes('svg')
     ) {
-      res.send(injectProxyTarget(await response.text(), req.headers.host));
+      res.send(injectProxyTarget(await response.text(), req.protocol, req.headers.host));
     } else {
       res.setHeader('content-length', response.headers.get('content-length'));
       Readable.fromWeb(response.body).pipe(res);
@@ -382,9 +387,67 @@ app.use((err, req, res, _next) => {
   res.status(500).send(err);
 });
 
+async function runProxy() {
+  return new Promise((resolve, reject) => {
+    let httpServer;
+    let httpsServer;
+
+    try {
+      // Start HTTP server
+      httpServer = http.createServer();
+      httpServer.on('request', app);
+      httpServer.listen(httpPort, () => {
+        console.info(`HTTP listening on port ${httpPort}`);
+      });
+
+      // Start HTTPS server
+      httpsServer = https.createServer({
+        key: fs.readFileSync(path.join('certs', 'localhost.key'), 'utf8'),
+        cert: fs.readFileSync(path.join('certs', 'localhost.crt'), 'utf8'),
+      });
+      httpsServer.on('request', app);
+      httpsServer.listen(httpsPort, () => {
+        console.info(`HTTPS listening on port ${httpsPort}`);
+      });
+    } catch (e) {
+      stopProxy();
+      reject(e);
+    }
+
+    function stopProxy() {
+      if (httpServer) {
+        httpServer.close();
+        httpServer = undefined;
+      }
+      if (httpsServer) {
+        httpsServer.close();
+        httpsServer = undefined;
+      }
+    }
+
+    process
+      .on('unhandledRejection', async (reason) => {
+        stopProxy();
+        reject(reason);
+      })
+      .on('uncaughtException', async (err) => {
+        stopProxy();
+        reject(err);
+      })
+      .on('SIGINT', () => {
+        stopProxy();
+        resolve();
+      });
+  });
+}
+
 /*
- * Start proxy
+ * Run the proxy
  */
-app.listen(port, () => {
-  console.log(`Proxy listening on port ${port}`);
-});
+runProxy()
+  .then(() => {
+    console.info('Proxy stopped');
+  })
+  .catch((e) => {
+    console.error(e);
+  });
