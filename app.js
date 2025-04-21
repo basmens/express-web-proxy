@@ -11,35 +11,37 @@ const rateLimitWindow = 3000; // Time window for the requests to count in ms
 const rateLimitCount = 10; // Max amount of allowed requests for that time window, inclusive
 
 // Build using the specs given by https://datatracker.ietf.org/doc/html/rfc9110#name-http-related-uri-schemes
+const urlProtocolRegex = /(?<protocol>https?:)/i;
+const urlEscapedDelimiterRegex = /(?<delimiter>\/|\\\/|\\u002f)/i;
+const urlUserInfoRegex = /(?<userInfo>[\w~.\-!$&'()*+,;=%:]*@)/;
+const urlHostRegex = /(?<host>\[[\w~.\-!$&'()*+,;=:]{2,}\]|[\w~.\-!$&'()*+,;=%]+)/;
+const urlPortRegex = /(?<port>:\d*)/;
+const urlPathRegexSource = (delimiter = '/') => `(?<path>(?:${delimiter}[\\w~.\\-!$&'()*+,;=%:@]*)*)`;
+const urlQueryRegex = /(?<query>\?[\w~.\-!$&'()*+,;=%:@/?]*)/;
+const urlFragmentRegex = /(?<fragment>#[\w~.\-!$&'()*+,;=%:@/?]*)/;
+
 const urlReplacementRegex = new RegExp(
   [
-    /(?<!\\|xmlns\s*=\s*\S{0,6})/,
-    /(?<protocol>https?:)?/,
-    /(?<delimiter>\/|\\\/|\\u002f)\k<delimiter>/,
-    /(?<userInfo>[\w~.\-!$&'()*+,;=%:]*@)?/,
-    /(?<host>\[[\w~.\-!$&'()*+,;=:]{2,}\]|[\w~.\-!$&'()*+,;=%]+)/,
-    /(?<port>:\d*)?/,
-    `(?<path>(?:\\k<delimiter>[\\w~.\\-!$&'()*+,;=%:@]*)*)`,
-    /(?<query>\?[\w~.\-!$&'()*+,;=%:@/?]*)?/,
-    /(?<fragment>#[\w~.\-!$&'()*+,;=%:@/?]*)?/,
-  ]
-    .map((r) => (typeof r === 'string' ? r : r.source))
-    .join(''),
+    // May not be preceded by a backslash or part of the xmlns attribute
+    `${/(?<!\\|xmlns\s*=\s*\S{0,6})/.source}`,
+    `${urlProtocolRegex.source}?`,
+    `${urlEscapedDelimiterRegex.source}\\k<delimiter>`,
+    `${urlUserInfoRegex.source}?${urlHostRegex.source}${urlPortRegex.source}?`,
+    `${urlPathRegexSource('\\k<delimiter>')}`,
+    `${urlQueryRegex.source}?`,
+    `${urlFragmentRegex.source}?`,
+  ].join(''),
   'gi',
 );
 
 const urlValidationRegex = new RegExp(
   [
-    /^https?:\/\//,
-    /(?<userInfo>[\w~.\-!$&'()*+,;=%:]*@)?/,
-    /(?<host>\[[\w~.\-!$&'()*+,;=:]{2,}\]|[\w~.\-!$&'()*+,;=%]+)/,
-    /(?<port>:\d*)?/,
-    /(?<path>(?:\/[\w~.\-!$&'()*+,;=%:@]*)*)/,
-    /(?<query>\?[\w~.\-!$&'()*+,;=%:@/?]*)?/,
-    /(?<fragment>#[\w~.\-!$&'()*+,;=%:@/?]*)?$/,
-  ]
-    .map((r) => (typeof r === 'string' ? r : r.source))
-    .join(''),
+    `^${urlProtocolRegex.source}//`,
+    `${urlUserInfoRegex.source}?${urlHostRegex.source}${urlPortRegex.source}?`,
+    `${urlPathRegexSource('/')}`,
+    `${urlQueryRegex.source}?`,
+    `${urlFragmentRegex.source}?$`,
+  ].join(''),
   'i',
 );
 
@@ -193,21 +195,19 @@ function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
  * @returns {string} The resulting string.
  */
 function injectProxyTarget(html, proxyDomain) {
-  let result = html.replace(
-    urlReplacementRegex,
-    (full, protocol, delimiter, userInfo, host, port, path, query, fragment) => {
-      const replacement = [
-        `http:${delimiter.repeat(2)}${proxyDomain}`,
-        `${delimiter}`,
-        `${protocol ? protocol.replace(':', '.') : 'http.'}${userInfo || ''}${host}${port || ''}`,
-        `${path || ''}`,
-        `${query || ''}`,
-        `${fragment || ''}`,
-      ].join('');
+  let result = html.replace(urlReplacementRegex, (...args) => {
+    const groups = args.at(-1);
+    const replacement = [
+      `http:${groups.delimiter.repeat(2)}${proxyDomain}`,
+      `${groups.delimiter}`,
+      `${groups.protocol?.replace(':', '.') || 'http.'}${groups.userInfo || ''}${groups.host}${groups.port || ''}`,
+      `${groups.path || ''}`,
+      `${groups.query || ''}`,
+      `${groups.fragment || ''}`,
+    ].join('');
 
-      return replacement;
-    },
-  );
+    return replacement;
+  });
 
   return result;
 }
@@ -349,7 +349,7 @@ app.use((req, _res, next) => {
  */
 app.post('/debug/csp', express.json({ type: '*/csp-report' }));
 app.post('/debug/csp', (req, res) => {
-  console.log(`CSP violation while proxying ${req.cookies.proxyTarget}: ${JSON.stringify(req.body, undefined, 2)}`);
+  console.log(`CSP violation: ${JSON.stringify(req.body, undefined, 2)}`);
   res.status(200).send();
 });
 
