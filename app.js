@@ -10,6 +10,39 @@ let recentRequests = [];
 const rateLimitWindow = 3000; // Time window for the requests to count in ms
 const rateLimitCount = 10; // Max amount of allowed requests for that time window, inclusive
 
+// Build using the specs given by https://datatracker.ietf.org/doc/html/rfc9110#name-http-related-uri-schemes
+const urlReplacementRegex = new RegExp(
+  [
+    /(?<!\\|xmlns\s*=\s*\S{0,6})/,
+    /(?<protocol>https?:)?/,
+    /(?<delimiter>\/|\\\/|\\u002f)\k<delimiter>/,
+    /(?<userInfo>[\w~.\-!$&'()*+,;=%:]*@)?/,
+    /(?<host>\[[\w~.\-!$&'()*+,;=:]{2,}\]|[\w~.\-!$&'()*+,;=%]+)/,
+    /(?<port>:\d*)?/,
+    `(?<path>(?:\\k<delimiter>[\\w~.\\-!$&'()*+,;=%:@]*)*)`,
+    /(?<query>\?[\w~.\-!$&'()*+,;=%:@/?]*)?/,
+    /(?<fragment>#[\w~.\-!$&'()*+,;=%:@/?]*)?/,
+  ]
+    .map((r) => (typeof r === 'string' ? r : r.source))
+    .join(''),
+  'gi',
+);
+
+const urlValidationRegex = new RegExp(
+  [
+    /^https?:\/\//,
+    /(?<userInfo>[\w~.\-!$&'()*+,;=%:]*@)?/,
+    /(?<host>\[[\w~.\-!$&'()*+,;=:]{2,}\]|[\w~.\-!$&'()*+,;=%]+)/,
+    /(?<port>:\d*)?/,
+    /(?<path>(?:\/[\w~.\-!$&'()*+,;=%:@]*)*)/,
+    /(?<query>\?[\w~.\-!$&'()*+,;=%:@/?]*)?/,
+    /(?<fragment>#[\w~.\-!$&'()*+,;=%:@/?]*)?$/,
+  ]
+    .map((r) => (typeof r === 'string' ? r : r.source))
+    .join(''),
+  'i',
+);
+
 /**
  * Takes in a url that starts with an absolute proxy target in the path. That proxy
  * target is extracted and cut out of the url. The proxy target and the modified url
@@ -160,35 +193,21 @@ function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
  * @returns {string} The resulting string.
  */
 function injectProxyTarget(html, proxyDomain) {
-  var urlRegex = new RegExp(
-    [
-      /(?<startChars>\S*?)/,
-      /(?<protocol>https?:|)/,
-      /(?<delimiter>\/|\\u002f){2}/,
-      /(?<domain>(?:[^\s"'`<.\\/:]+\.[^"'`<\s\\/:]+)|localhost)/,
-      /(?<targetPort>:[0-9]+|)/,
-      /(?<path>[^"'`<\s?:]*)/,
-      /(?<query>(?:\?[^"'`<\s:]*)?)/,
-    ]
-      .map((r) => r.source)
-      .join(''),
-    'gi',
+  let result = html.replace(
+    urlReplacementRegex,
+    (full, protocol, delimiter, userInfo, host, port, path, query, fragment) => {
+      const replacement = [
+        `http:${delimiter.repeat(2)}${proxyDomain}`,
+        `${delimiter}`,
+        `${protocol ? protocol.replace(':', '.') : 'http.'}${userInfo || ''}${host}${port || ''}`,
+        `${path || ''}`,
+        `${query || ''}`,
+        `${fragment || ''}`,
+      ].join('');
+
+      return replacement;
+    },
   );
-
-  let result = html.replace(urlRegex, (full, startChars, protocol, delimiter, domain, targetPort, path, query) => {
-    if (startChars.endsWith('\\')) return full;
-    if (startChars.includes('xmlns')) return full;
-
-    const replacement = [
-      `${startChars}http:${delimiter.repeat(2)}${proxyDomain}`,
-      `${delimiter}`,
-      `${protocol ? protocol.replace(':', '.') : 'http.'}${domain}${targetPort}`,
-      `${path}`,
-      `${query}`,
-    ].join('');
-
-    return replacement;
-  });
 
   return result;
 }
@@ -289,7 +308,7 @@ async function proxyBrowserRequestOnCookies(req) {
 async function proxyBrowserRequest(req) {
   let proxyTarget;
   let url;
-  if (req.url.startsWith('/http')) {
+  if (req.url.startsWith('/http.') || req.url.startsWith('/https.')) {
     const proxyTargetUrlPair = getAbsoluteProxyTarget(req.url);
     [proxyTarget, url] = [proxyTargetUrlPair.proxyTarget, proxyTargetUrlPair.modifiedUrl];
   } else if (Array.isArray(req.cookies.proxyTargets) && req.cookies.proxyTargets.length > 0) {
@@ -297,6 +316,9 @@ async function proxyBrowserRequest(req) {
   } else {
     [proxyTarget, url] = [fallBackDomain, '/'];
   }
+
+  // Url validation
+  if ((proxyTarget + url).search(urlValidationRegex) === -1) throw new Error('Not a valid url: ' + (proxyTarget + url));
 
   const bodyStream = ['GET', 'HEAD', 'TRACE'].includes(req.method) ? undefined : Readable.toWeb(req);
   const response = await sendBrowserRequest(req, bodyStream, proxyTarget, url);
