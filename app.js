@@ -1,6 +1,7 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 
 const app = express();
 const port = 3000;
@@ -156,16 +157,18 @@ function transformHeadersForRequest(req, proxyTarget) {
         break;
       case 'content-length':
       case 'content-encoding':
+      case 'transfer-encoding':
         break;
+      case 'cookie': {
+        const cookieName = value.substring(0, value.indexOf('='));
+        if (cookieName === 'proxyTargets') break;
+        if (cookieName.search(/^_+proxyTargets$/) !== -1) value = value.substring(1);
+        resultHeaders.set(name, value);
+        break;
+      }
       default:
         resultHeaders.set(name, value);
         break;
-    }
-  });
-
-  Object.entries(req.cookies).forEach(([name, value]) => {
-    if (name !== 'proxyTarget') {
-      resultHeaders.append('Set-Cookie', `${name}=${value}`);
     }
   });
 
@@ -191,6 +194,10 @@ function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
         if (parsedCookie.options.domain) {
           parsedCookie.options.domain = proxyTarget.split(':')[0];
         }
+        if (parsedCookie.name.search(/^_*proxyTargets$/) !== -1) {
+          parsedCookie.name = '_' + parsedCookie.name;
+        }
+        parsedCookie.options.encode = String;
         res.cookie(parsedCookie.name, parsedCookie.value, parsedCookie.options);
         break;
       }
@@ -213,6 +220,7 @@ function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
         break;
       case 'content-length':
       case 'content-encoding':
+      case 'transfer-encoding':
       case 'connection':
         break;
       default:
@@ -426,7 +434,7 @@ app.all('/**', async (req, res, next) => {
       res.send(injectProxyTarget(await response.text(), req.headers.host));
     } else {
       res.setHeader('content-length', response.headers.get('content-length'));
-      Readable.fromWeb(response.body).pipe(res);
+      await pipeline(Readable.fromWeb(response.body), res).catch(console.log);
     }
   } catch (err) {
     next(err);
