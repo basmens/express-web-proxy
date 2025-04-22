@@ -11,10 +11,47 @@ const rateLimitWindow = 3000; // Time window for the requests to count in ms
 const rateLimitCount = 10; // Max amount of allowed requests for that time window, inclusive
 
 // Build using the specs given by https://datatracker.ietf.org/doc/html/rfc9110#name-http-related-uri-schemes
+const urlRegName = /(?<regName>[\w~.\-!$&'()*+,;=%]+)/;
+const ipv4Regex = /(?<ipv4Address>(?:25[0-5]|2[0-4]\d|1?\d{1,2})(?:\.25[0-5]|\.2[0-4]\d|\.1?\d{1,2}){3})/;
+const ipv6Regex = (endingChar = '[^\\da-f:.]') => {
+  //ls32 = ( h16 ":" h16 ) / IPv4address        # least-significant 32 bits of address
+  //h16 = 1*4HEX_DIGIT            # 16 bits of address represented in hexadecimal
+  const ls32 = `(?:${/[\da-f]{1,4}:[\da-f]{1,4}/.source}|${ipv4Regex.source.replace('<ipv4Address>', ':')})`;
+
+  // Counts the total number of h16 groups up until and including the first bit of the ls32 and asserts it at most 6.
+  const countingLookahead = `(?=${/:*(?:[\da-f]{1,4}:+){0,5}[\da-f]{1,4}/.source}(?::[\\da-f]{1,4}${endingChar}|\\.))`;
+
+  // (((group count check + 4-abbreviated group + 5-explicit group) OR 6-explicit group) + ls32) OR the two final cases manually
+  return new RegExp(
+    [
+      `(?<ipv6Address>(?:${countingLookahead}`,
+      `${/(?:(?:[\da-f]{1,4}:){1,5}|:):(?:[\da-f]{1,4}:){0,5}/.source}`, // [ *4( h16 ":" ) h16 ] "::" 5( h16 ":" )
+      `|${/(?:[\da-f]{1,4}:){6}/.source})`, // 6( h16 ":" )
+      ls32,
+      `|${/(?:(?:[\da-f]{1,4}:){0,5}[\da-f]{1,4})?::[\da-f]{1,4}/.source}`, // [ *5( h16 ":" ) h16 ] "::" h16
+      `|${/(?:(?:[\da-f]{1,4}:){0,6}[\da-f]{1,4})?::/.source})`, // [ *6( h16 ":" ) h16 ] "::"
+      `(?=${endingChar})`,
+    ].join(''),
+    'i',
+  );
+};
+const ipvFutureRegex = /(?<ipvFuture>v[\da-fA-F]+\.[\w~.\-!$&'()*+,;=:]+)/;
+
 const urlProtocolRegex = /(?<protocol>https?:)/i;
 const urlEscapedDelimiterRegex = /(?<delimiter>\/|\\\/|\\u002f)/i;
 const urlUserInfoRegex = /(?<userInfo>[\w~.\-!$&'()*+,;=%:]*@)/;
-const urlHostRegex = /(?<host>\[[\w~.\-!$&'()*+,;=:]{2,}\]|[\w~.\-!$&'()*+,;=%]+)/;
+const urlHostRegex = new RegExp(
+  [
+    `(?<host>`,
+    `\\[${ipv6Regex(']').source}\\]|`, // Ipv6 literal
+    `\\[${ipvFutureRegex.source}\\]|`, // IpvFuture literal
+    `${ipv4Regex.source}|`, // Ipv4 address
+    `${urlRegName.source})`, // Reg name
+  ].join(''),
+  '',
+);
+
+/\[[\w~.\-!$&'()*+,;=:]{2,}\]|[\w~.\-!$&'()*+,;=%]+/;
 const urlPortRegex = /(?<port>:\d*)/;
 const urlPathRegexSource = (delimiter = '/') => `(?<path>(?:${delimiter}[\\w~.\\-!$&'()*+,;=%:@]*)*)`;
 const urlQueryRegex = /(?<query>\?[\w~.\-!$&'()*+,;=%:@/?]*)/;
