@@ -160,10 +160,19 @@ function transformHeadersForRequest(req, proxyTarget) {
       case 'transfer-encoding':
         break;
       case 'cookie': {
-        const cookieName = value.substring(0, value.indexOf('='));
-        if (cookieName === 'proxyTargets') break;
-        if (cookieName.search(/^_+proxyTargets$/) !== -1) value = value.substring(1);
-        resultHeaders.set(name, value);
+        const cookies = value
+          .split(';')
+          .map((c) => {
+            const trimmed = c.trim();
+            const cookieName = trimmed.substring(0, trimmed.indexOf('='));
+            if (cookieName === 'proxyTargets') return '';
+            if (cookieName.search(/^_+proxyTargets$/) !== -1) return trimmed.substring(1);
+            return trimmed;
+          })
+          .filter((c) => c !== '')
+          .join('; ');
+
+        resultHeaders.set(name, cookies);
         break;
       }
       default:
@@ -176,8 +185,8 @@ function transformHeadersForRequest(req, proxyTarget) {
 }
 
 /**
- * transform headers that are received from the proxy target to so that they
- * are usable to send to the browser.
+ * Transforms the headers that are received from the proxy target to so that they
+ * are usable to send to the browser. Modifies the response instead of returning anything.
  *
  * @param {Response} proxyResponse The response from the proxy target
  * @param {Express.Response} res The response to send to the browser
@@ -301,6 +310,9 @@ async function sendBrowserRequest(req, bodyStream, proxyTarget, url) {
     return new Response(null, { status: 429 });
   }
 
+  // Url validation
+  if ((proxyTarget + url).search(urlValidationRegex) === -1) throw new Error('Not a valid url: ' + (proxyTarget + url));
+
   // Send request
   return fetch(proxyTarget + url, {
     method: req.method,
@@ -362,9 +374,6 @@ async function proxyBrowserRequest(req) {
     [proxyTarget, url] = [fallBackDomain, '/'];
   }
 
-  // Url validation
-  if ((proxyTarget + url).search(urlValidationRegex) === -1) throw new Error('Not a valid url: ' + (proxyTarget + url));
-
   const bodyStream = ['GET', 'HEAD', 'TRACE'].includes(req.method) ? undefined : Readable.toWeb(req);
   const response = await sendBrowserRequest(req, bodyStream, proxyTarget, url);
 
@@ -408,7 +417,7 @@ app.all('/**', async (req, res, next) => {
 
     const host = req.headers.host; // This includes the port
     res.status(response.status);
-    res.set(transformHeadersForResponse(response, res, host));
+    transformHeadersForResponse(response, res, host);
     res.cookie('proxyTargets', JSON.stringify(req.cookies.proxyTargets), {
       httpOnly: true,
       secure: false,
