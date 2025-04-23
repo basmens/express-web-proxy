@@ -310,8 +310,9 @@ async function sendBrowserRequest(req, bodyStream, proxyTarget, url) {
     return new Response(null, { status: 429 });
   }
 
+  // TODO this validation is too strict, fetch automatically url encoded illegal characters, while this validation doesn't accept them
   // Url validation
-  if ((proxyTarget + url).search(urlValidationRegex) === -1) throw new Error('Not a valid url: ' + (proxyTarget + url));
+  // if ((proxyTarget + url).search(urlValidationRegex) === -1) throw new Error('Not a valid url: ' + (proxyTarget + url));
 
   // Send request
   return fetch(proxyTarget + url, {
