@@ -72,17 +72,6 @@ const urlReplacementRegex = new RegExp(
   'gi',
 );
 
-const urlValidationRegex = new RegExp(
-  [
-    `^${urlProtocolRegex.source}//`,
-    `${urlUserInfoRegex.source}?${urlHostRegex.source}${urlPortRegex.source}?`,
-    `${urlPathRegexSource('/')}`,
-    `${urlQueryRegex.source}?`,
-    `${urlFragmentRegex.source}?$`,
-  ].join(''),
-  'i',
-);
-
 /**
  * Takes in a url that starts with an absolute proxy target in the path. That proxy
  * target is extracted and cut out of the url. The proxy target and the modified url
@@ -309,10 +298,6 @@ async function sendBrowserRequest(req, bodyStream, proxyTarget, url) {
   if (checkRateLimit(req.ip, req['user-agent'], proxyTarget, path)) {
     return new Response(null, { status: 429 });
   }
-
-  // TODO this validation is too strict, fetch automatically url encoded illegal characters, while this validation doesn't accept them
-  // Url validation
-  // if ((proxyTarget + url).search(urlValidationRegex) === -1) throw new Error('Not a valid url: ' + (proxyTarget + url));
 
   // Send request
   return fetch(proxyTarget + url, {
