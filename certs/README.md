@@ -2,7 +2,7 @@
 
 For development purposes, the source code is served on http://localhost:xxxx
 
-To make your browser thrusts this server, you need to install RootCA.crt
+To make your browser trusts this server, you need to install RootCA.crt
 into the root certificates store of your computer.
 
 ## Generate HTTPS certificate (when needed)
