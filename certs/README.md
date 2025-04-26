@@ -21,7 +21,7 @@ using the following commands:
 ```
 
 
-When needed a a pfx file can be created using the command below.
+When needed a pfx file can be created using the command below.
 
 ```sh
   cd ./certs
@@ -32,7 +32,7 @@ When needed a a pfx file can be created using the command below.
 
 ## Generate RootCA (when needed)
 
-The RootCA will be valid till 31-12-2034. After then you can use the following command to generate a new one.  
+The RootCA will be valid until 31-12-2034. After that you can use the following command to generate a new one.  
 You should add the new RootCA.crt to your root certificate store.
 
 ```sh
