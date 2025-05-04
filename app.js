@@ -2,9 +2,14 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
+import https from 'https';
+import http from 'http';
+import path from 'path';
+import fs from 'fs';
 
 const app = express();
-const port = 3000;
+const httpPort = 3000;
+const httpsPort = 3001;
 const fallBackDomain = 'https://www.example.com';
 
 let recentRequests = [];
@@ -234,14 +239,15 @@ function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
  * Tries to inject the proxy target into the given html. It replaces http(s)://path?query
  * with http://proxyDomain/http(s).path?query.
  * @param {string} html The html string.
- * @param {string} proxyDomain The raw proxy target.
+ * @param {string} proxyProtocol The protocol on which the proxy is connected to.
+ * @param {string} proxyDomain The domain through which the proxy target is connected to.
  * @returns {string} The resulting string.
  */
-function injectProxyTarget(html, proxyDomain) {
+function injectProxyTarget(html, proxyProtocol, proxyDomain) {
   let result = html.replace(urlReplacementRegex, (...args) => {
     const groups = args.at(-1);
     const replacement = [
-      `http:${groups.delimiter.repeat(2)}${proxyDomain}`,
+      `${proxyProtocol}:${groups.delimiter.repeat(2)}${proxyDomain}`,
       `${groups.delimiter}`,
       `${groups.protocol?.replace(':', '.') || 'http.'}${groups.userInfo || ''}${groups.host}${groups.port || ''}`,
       `${groups.path || ''}`,
@@ -426,7 +432,7 @@ app.all('/**', async (req, res, next) => {
       type.includes('text') ||
       type.includes('svg')
     ) {
-      res.send(injectProxyTarget(await response.text(), req.headers.host));
+      res.send(injectProxyTarget(await response.text(), req.protocol, req.headers.host));
     } else {
       res.setHeader('content-length', response.headers.get('content-length'));
       await pipeline(Readable.fromWeb(response.body), res).catch(console.log);
@@ -444,9 +450,67 @@ app.use((err, req, res, _next) => {
   res.status(500).send(err);
 });
 
+async function runProxy() {
+  return new Promise((resolve, reject) => {
+    let httpServer;
+    let httpsServer;
+
+    try {
+      // Start HTTP server
+      httpServer = http.createServer();
+      httpServer.on('request', app);
+      httpServer.listen(httpPort, () => {
+        console.info(`HTTP listening on port ${httpPort}`);
+      });
+
+      // Start HTTPS server
+      httpsServer = https.createServer({
+        key: fs.readFileSync(path.join('certs', 'localhost.key'), 'utf8'),
+        cert: fs.readFileSync(path.join('certs', 'localhost.crt'), 'utf8'),
+      });
+      httpsServer.on('request', app);
+      httpsServer.listen(httpsPort, () => {
+        console.info(`HTTPS listening on port ${httpsPort}`);
+      });
+    } catch (e) {
+      stopProxy();
+      reject(e);
+    }
+
+    function stopProxy() {
+      if (httpServer) {
+        httpServer.close();
+        httpServer = undefined;
+      }
+      if (httpsServer) {
+        httpsServer.close();
+        httpsServer = undefined;
+      }
+    }
+
+    process
+      .on('unhandledRejection', async (reason) => {
+        stopProxy();
+        reject(reason);
+      })
+      .on('uncaughtException', async (err) => {
+        stopProxy();
+        reject(err);
+      })
+      .on('SIGINT', () => {
+        stopProxy();
+        resolve();
+      });
+  });
+}
+
 /*
- * Start proxy
+ * Run the proxy
  */
-app.listen(port, () => {
-  console.log(`Proxy listening on port ${port}`);
-});
+runProxy()
+  .then(() => {
+    console.info('Proxy stopped');
+  })
+  .catch((e) => {
+    console.error(e);
+  });
