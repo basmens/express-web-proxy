@@ -19,8 +19,7 @@ const rateLimitCount = 10; // Max amount of allowed requests for that time windo
 // Build using the specs given by https://datatracker.ietf.org/doc/html/rfc9110#name-http-related-uri-schemes
 const urlRegName = /(?<regName>[\w~.\-!$&'()*+,;=%]+)/;
 const ipv4Regex = /(?<ipv4Address>(?:25[0-5]|2[0-4]\d|1?\d{1,2})(?:\.25[0-5]|\.2[0-4]\d|\.1?\d{1,2}){3})/;
-const ipv6Regex =
-  /\[(?=(?<_start>(?:[\da-f]{1,4}:?){0,8})(?:::|\.|]))(?<ipv6Address>:?(?:\[\da-f]{1,4}(?::(?!])|(?=]))|(?=:)|(?<=\[\k<_start>:):|(?:(?:\.|(?<=:))(?:25[0-5]|2[0-4]\d|1?\d{1,2})){2}){8})]/gi;
+const ipv6Regex = /\[[\da-f:.]+]/gi;
 const ipvFutureRegex = /\[(?<ipvFuture>v[\da-fA-F]+\.[\w~.\-!$&'()*+,;=:]+)]/;
 
 const urlProtocolRegex = /(?<protocol>https?:)/i;
