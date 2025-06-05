@@ -1,40 +1,44 @@
-/^(?:(?:(?=:*(?:[\da-f]{1,4}:+){0,5}[\da-f]{1,4}(?::[\da-f]{1,4}[^\da-f:\.]|\.))(?:(?:[\da-f]{1,4}:){1,5}|:):(?:[\da-f]{1,4}:){0,6}|(?:[\da-f]{1,4}:){6})(?<ls32>[\da-f]{1,4}:[\da-f]{1,4}|(?<ipv4Address>(?:25[0-5]|2[0-4]\d|1?\d{1,2})(?:\.25[0-5]|\.2[0-4]\d|\.1?\d{1,2}){3}))|(?:(?:[\da-f]{1,4}:){0,5}[\da-f]{1,4})?::[\da-f]{1,4}|(?:(?:[\da-f]{1,4}:){0,6}[\da-f]{1,4})?::)(?=[^\da-f:\.])/gmi
+/(?<ipv6Address>(?:(?=:*(?:[\da-f]{1,4}:+){0,5}[\da-f]{1,4}(?::[\da-f]{1,4}[^\da-f:\.]|\.))(?:(?:[\da-f]{1,4}:){1,5}|:):(?:[\da-f]{1,4}:){0,5}|(?:[\da-f]{1,4}:){6})(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1?\d{1,2})(?:\.25[0-5]|\.2[0-4]\d|\.1?\d{1,2}){3}))|(?:(?:[\da-f]{1,4}:){0,5}[\da-f]{1,4})?::[\da-f]{1,4}|(?:(?:[\da-f]{1,4}:){0,6}[\da-f]{1,4})?::)(?=[^\da-f:\.])/img
+
+/\[(?=(?<_start>(?:[\da-f]{1,4}:?){0,8})(?:::|\.|]))(?<ipv6Address>:?(?:[\da-f]{1,4}(?::(?!])|(?=]))|(?=:)|(?<=\[\k<_start>:):|(?<=:)(?:25[0-5]\.|2[0-4]\d\.|1?\d{1,2}\.){3}|(?<=\.)(?:25[0-5]|2[0-4]\d|1?\d{1,2})){8})]/gmi
 
 
 Valid IPv6 Addresses
-2001:0db8:85a3:0000:0000:8a2e:0370:7334  
-2001:db8:85a3:0:0:8A2E:0370:7334  
-2001:db8:85a3::8a2e:370:7334 (zero compression)  
-::1 (loopback)  
-:: (unspecified)  
-fe80::1ff:fe23:4567:890a (link-local)  
-2001:db8:: (valid use of :: at the end)  
-::ffff:192.0.2.128 (IPv4-mapped)  
-0:0:0:0:0:ffff:192.1.56.10  
-2001:0db8:0000:0000:0000:0000:1428:57ab  
-2001:db8::1428:57ab  
-ff02::1 (multicast)  
-2001:db8:0:0:0:0:2:1  
-2001:db8::2:1  
-::ffff:c000:280 (another IPv4-mapped format)
-
+[2001:0db8:85a3:0000:0000:8a2e:0370:7334]  
+[2001:db8:85a3:0:0:8A2E:0370:7334]  
+[2001:db8:85a3::8a2e:370:7334] (zero compression)  
+[::1] (loopback)  
+[::] (unspecified)  
+[fe80::1ff:fe23:4567:890a] (link-local)
+[2001:db8:2f:44b:789:1:2::] (valid use of :: at the end)
+[::ffff:192.0.2.128] (IPv4-mapped)
+[0:0:0:0:0:ffff:192.1.56.10]
+[2001:0db8:0000:0000:0000:0000:1428:57ab]
+[2001:db8::1428:57ab]
+[ff02::1] (multicast)
+[2001:db8:0:0:0:0:2:1]
+[2001:db8::2:1]
+[::ffff:c000:280] (another IPv4-mapped format)
+[::1:2:3:4:5:6:7]
 
 Invalid IPv6 Addresses
-2001:db8:85a3::8a2e:37023:7334 (too long group)
-2001:db8:85a3:0:0:8A2E:0370:7334:1234 (9 groups)  
-2001:db8:85a3:::8a2e:370:7334 (multiple ::)  
-2001:db8::g1 (invalid hex digit g)  
-1200::AB00:1234::2552:7777:1313 (more than one ::)  
-::ffff:192.168.256.1 (invalid IPv4 segment)  
-2001:db8:85a3:0:0:8A2E:0370 (only 7 groups without ::)  
-12345::abcd (segment too long)  
-: (just one colon)  
-2001:db8:85a3::8a2e::7334 (double ::)  
-::1:: (trailing :: after ::1)  
-GGGG:0000:0000:0000:0000:0000:0000:0001 (non-hex characters)  
-2001:db8:85a3:0:0:8A2E:0370: (trailing colon)  
-:2001:db8::1 (leading colon without ::)  
-2001:db8::1::1 (multiple double-colons)
-2001:db8::1:2:3:4:5:6:7 (Compression but still too many)
-2001:db8:1:2:3:4:5::192.0.2.128 (Compression but still too many)
-2001::db8:1:2:3:4:5:192.0.2.128 (Compression but still too many)
+[2001:db8:85a3::8a2e:37023:7334] (too long group)
+[2001:db8:85a3:0:0:8A2E:0370:7334:1234] (9 groups)
+[2001:db8:85a3:::8a2e:370:7334] (three :::)
+[2001:db8::g1] (invalid hex digit g)
+[1200::AB00:1234::2552:7777:1313] (more than one ::)
+[::ffff:192.168.256.1] (invalid IPv4 segment)
+[2001:db8:85a3:0:0:8A2E:0370] (only 7 groups without ::)
+[12345::abcd] (segment too long)
+[:] (just one colon)
+[2001:db8:85a3::8a2e::7334] (double ::)
+[::1::] (trailing :: after ::1)
+[1:2:3:4:5:6:::] (ending in :::)
+[GGGG:0000:0000:0000:0000:0000:0000:0001] (non-hex characters)
+[2001:db8::85a3:0:0:8A2E:0370:] (trailing colon)
+[:2001:db8::1] (leading colon without ::)
+[2001:db8::1::1] (multiple double-colons)
+[2001:db8::1:2:3:4:5:6:7] (Compression but still too many)
+[2001:db8:1:2:3:4:5::192.0.2.128] (Compression but still too many)
+[2001::db8:1:2:3:4:5:192.0.2.128] (Compression but still too many)
+[::ffff:192.0.a26f] (IPv4-hex-hybrid)
