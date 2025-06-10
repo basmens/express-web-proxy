@@ -1,6 +1,7 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import https from 'https';
 import http from 'http';
 import path from 'path';
@@ -14,6 +15,46 @@ const fallBackDomain = 'https://www.example.com';
 let recentRequests = [];
 const rateLimitWindow = 3000; // Time window for the requests to count in ms
 const rateLimitCount = 10; // Max amount of allowed requests for that time window, inclusive
+
+// Build using the specs given by https://datatracker.ietf.org/doc/html/rfc9110#name-http-related-uri-schemes
+const urlRegName = /(?<regName>[\w~.\-!$&'()*+,;=%]+)/;
+const ipv4Regex = /(?<ipv4Address>(?:25[0-5]|2[0-4]\d|1?\d{1,2})(?:\.25[0-5]|\.2[0-4]\d|\.1?\d{1,2}){3})/;
+const ipv6Regex = /\[[\da-f:.]+]/gi;
+const ipvFutureRegex = /\[(?<ipvFuture>v[\da-fA-F]+\.[\w~.\-!$&'()*+,;=:]+)]/;
+
+const urlProtocolRegex = /(?<protocol>https?:)/i;
+const urlEscapedDelimiterRegex = /(?<delimiter>\/|\\\/|\\u002f)/i;
+const urlUserInfoRegex = /(?<userInfo>[\w~.\-!$&'()*+,;=%:]*@)/;
+const urlHostRegex = new RegExp(
+  [
+    `(?<host>`,
+    `${ipv6Regex.source}|`, // Ipv6 literal
+    `${ipvFutureRegex.source}|`, // IpvFuture literal
+    `${ipv4Regex.source}|`, // Ipv4 address
+    `${urlRegName.source})`, // Reg name
+  ].join(''),
+  'gi',
+);
+
+/\[[\w~.\-!$&'()*+,;=:]{2,}\]|[\w~.\-!$&'()*+,;=%]+/;
+const urlPortRegex = /(?<port>:\d*)/;
+const urlPathRegexSource = (delimiter = '/') => `(?<path>(?:${delimiter}[\\w~.\\-!$&'()*+,;=%:@]*)*)`;
+const urlQueryRegex = /(?<query>\?[\w~.\-!$&'()*+,;=%:@/?]*)/;
+const urlFragmentRegex = /(?<fragment>#[\w~.\-!$&'()*+,;=%:@/?]*)/;
+
+const urlReplacementRegex = new RegExp(
+  [
+    // May not be preceded by a backslash or part of the xmlns attribute
+    `${/(?<!\\|xmlns\s*=\s*\S{0,6})/.source}`,
+    `${urlProtocolRegex.source}?`,
+    `${urlEscapedDelimiterRegex.source}\\k<delimiter>`,
+    `${urlUserInfoRegex.source}?${urlHostRegex.source}${urlPortRegex.source}?`,
+    `${urlPathRegexSource('\\k<delimiter>')}`,
+    `${urlQueryRegex.source}?`,
+    `${urlFragmentRegex.source}?`,
+  ].join(''),
+  'gi',
+);
 
 /**
  * Takes in a url that starts with an absolute proxy target in the path. That proxy
@@ -89,16 +130,27 @@ function transformHeadersForRequest(req, proxyTarget) {
         break;
       case 'content-length':
       case 'content-encoding':
+      case 'transfer-encoding':
         break;
+      case 'cookie': {
+        const cookies = value
+          .split(';')
+          .map((c) => {
+            const trimmed = c.trim();
+            const cookieName = trimmed.substring(0, trimmed.indexOf('='));
+            if (cookieName === 'proxyTargets') return '';
+            if (cookieName.search(/^_+proxyTargets$/) !== -1) return trimmed.substring(1);
+            return trimmed;
+          })
+          .filter((c) => c !== '')
+          .join('; ');
+
+        resultHeaders.set(name, cookies);
+        break;
+      }
       default:
         resultHeaders.set(name, value);
         break;
-    }
-  });
-
-  Object.entries(req.cookies).forEach(([name, value]) => {
-    if (name !== 'proxyTarget') {
-      resultHeaders.append('Set-Cookie', `${name}=${value}`);
     }
   });
 
@@ -106,8 +158,8 @@ function transformHeadersForRequest(req, proxyTarget) {
 }
 
 /**
- * transform headers that are received from the proxy target to so that they
- * are usable to send to the browser.
+ * Transforms the headers that are received from the proxy target to so that they
+ * are usable to send to the browser. Modifies the response instead of returning anything.
  *
  * @param {Response} proxyResponse The response from the proxy target
  * @param {Express.Response} res The response to send to the browser
@@ -124,6 +176,10 @@ function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
         if (parsedCookie.options.domain) {
           parsedCookie.options.domain = proxyTarget.split(':')[0];
         }
+        if (parsedCookie.name.search(/^_*proxyTargets$/) !== -1) {
+          parsedCookie.name = '_' + parsedCookie.name;
+        }
+        parsedCookie.options.encode = String;
         res.cookie(parsedCookie.name, parsedCookie.value, parsedCookie.options);
         break;
       }
@@ -146,6 +202,7 @@ function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
         break;
       case 'content-length':
       case 'content-encoding':
+      case 'transfer-encoding':
       case 'connection':
         break;
       default:
@@ -161,35 +218,20 @@ function transformHeadersForResponse(proxyResponse, res, proxyTarget) {
  * Tries to inject the proxy target into the given html. It replaces http(s)://path?query
  * with http://proxyDomain/http(s).path?query.
  * @param {string} html The html string.
- * @param {string} proxyDomain The raw proxy target.
+ * @param {string} proxyProtocol The protocol on which the proxy is connected to.
+ * @param {string} proxyDomain The domain through which the proxy target is connected to.
  * @returns {string} The resulting string.
  */
 function injectProxyTarget(html, proxyProtocol, proxyDomain) {
-  var urlRegex = new RegExp(
-    [
-      /(?<startChars>\S*?)/,
-      /(?<protocol>https?:|)/,
-      /(?<delimiter>\/|\\u002f){2}/,
-      /(?<domain>(?:[^\s"'`<.\\/:]+\.[^"'`<\s\\/:]+)|localhost)/,
-      /(?<targetPort>:[0-9]+|)/,
-      /(?<path>[^"'`<\s?:]*)/,
-      /(?<query>(?:\?[^"'`<\s:]*)?)/,
-    ]
-      .map((r) => r.source)
-      .join(''),
-    'gi',
-  );
-
-  let result = html.replace(urlRegex, (full, startChars, protocol, delimiter, domain, targetPort, path, query) => {
-    if (startChars.endsWith('\\')) return full;
-    if (startChars.includes('xmlns')) return full;
-
+  let result = html.replace(urlReplacementRegex, (...args) => {
+    const groups = args.at(-1);
     const replacement = [
-      `${startChars}${proxyProtocol}:${delimiter.repeat(2)}${proxyDomain}`,
-      `${delimiter}`,
-      `${protocol ? protocol.replace(':', '.') : 'http.'}${domain}${targetPort}`,
-      `${path}`,
-      `${query}`,
+      `${proxyProtocol}:${groups.delimiter.repeat(2)}${proxyDomain}`,
+      `${groups.delimiter}`,
+      `${groups.protocol?.replace(':', '.') || 'http.'}${groups.userInfo || ''}${groups.host}${groups.port || ''}`,
+      `${groups.path || ''}`,
+      `${groups.query || ''}`,
+      `${groups.fragment || ''}`,
     ].join('');
 
     return replacement;
@@ -294,7 +336,7 @@ async function proxyBrowserRequestOnCookies(req) {
 async function proxyBrowserRequest(req) {
   let proxyTarget;
   let url;
-  if (req.url.startsWith('/http')) {
+  if (req.url.startsWith('/http.') || req.url.startsWith('/https.')) {
     const proxyTargetUrlPair = getAbsoluteProxyTarget(req.url);
     [proxyTarget, url] = [proxyTargetUrlPair.proxyTarget, proxyTargetUrlPair.modifiedUrl];
   } else if (Array.isArray(req.cookies.proxyTargets) && req.cookies.proxyTargets.length > 0) {
@@ -332,7 +374,7 @@ app.use((req, _res, next) => {
  */
 app.post('/debug/csp', express.json({ type: '*/csp-report' }));
 app.post('/debug/csp', (req, res) => {
-  console.log(`CSP violation while proxying ${req.cookies.proxyTarget}: ${JSON.stringify(req.body, undefined, 2)}`);
+  console.log(`CSP violation: ${JSON.stringify(req.body, undefined, 2)}`);
   res.status(200).send();
 });
 
@@ -346,7 +388,7 @@ app.all('/**', async (req, res, next) => {
 
     const host = req.headers.host; // This includes the port
     res.status(response.status);
-    res.set(transformHeadersForResponse(response, res, host));
+    transformHeadersForResponse(response, res, host);
     res.cookie('proxyTargets', JSON.stringify(req.cookies.proxyTargets), {
       httpOnly: true,
       secure: false,
@@ -372,7 +414,7 @@ app.all('/**', async (req, res, next) => {
       res.send(injectProxyTarget(await response.text(), req.protocol, req.headers.host));
     } else {
       res.setHeader('content-length', response.headers.get('content-length'));
-      Readable.fromWeb(response.body).pipe(res);
+      await pipeline(Readable.fromWeb(response.body), res).catch(console.log);
     }
   } catch (err) {
     next(err);

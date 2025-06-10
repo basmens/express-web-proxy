@@ -1,0 +1,32 @@
+URL's to match:
+From https://en.wikipedia.org/wiki/Uniform_Resource_Identifier#Syntax (Those that require an authority)
+        userInfo       host      port
+        ┌──┴───┐ ┌──────┴──────┐ ┌┴─┐
+https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#top
+└─┬─┘   └─────────────┬─────────────┘└───────┬───────┘ └────────────┬────────────┘ └┬┘
+scheme            authority                path                   query          fragment
+        userInfo       host      port
+        ┌──┴───┐ ┌──────┴──────┐ ┌┴─┐
+https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#:~:text=whatever
+└─┬─┘   └─────────────┬─────────────┘└───────┬───────┘ └────────────┬────────────┘ └───────┬───────┘
+scheme            authority                path                   query                 fragment
+
+http://[2001:db8::7]/c=GB?objectClass?one
+└┬─┘   └─────┬─────┘└─┬─┘ └──────┬──────┘
+scheme   authority   path      query
+
+https://192.0.2.16:80/
+└─┬─┘   └─────┬─────┘│
+scheme     authority  path
+
+//example.com/path/resource.txt
+https:\u002F\u002Fwww.nytimes.com\u002Fsubscription\u002Fgames?campaignId=4QHQ8
+https:\u002F\u002Fmyaccount.nytimes.com\u002Fauth\u002Fenter-email?redirect_uri=https%3A%2F%2Fwww.nytimes.com%2Fsubscription%2Fgames-offer%3FcampaignId%3D8YUQL%26EXIT_URI%3Dhttps%3A%2F%2Fwww.nytimes.com%2Fcrosswords&response_type=cookie&client_id=games&application=crosswords
+https:\u002F\u002Faccount.nytimes.com
+https:\/\/a.et.stg.nytimes.com
+
+
+Not to match or match requires filter in code:
+/\//g
+<svg version="1.1" width="300" height="200" xmlns="http://www.w3.org/2000/svg">
+b=navigator.userAgent.match(/Edge\//);z(b||!M||parseInt(M[1],10)>=43)}})).catch((function(){return!1}))}(M).then((function(M){return
